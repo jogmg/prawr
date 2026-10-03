@@ -2,17 +2,13 @@
 
 import { ConnectKitButton } from "connectkit";
 import { useEffect, useState } from "react";
-import { formatUnits } from "viem";
-import {
-  useAccount,
-  usePublicClient,
-  useReadContract,
-  useWriteContract,
-} from "wagmi";
-import { ARC_CHAIN } from "../lib/arc-network";
+import { parseUnits } from "viem";
+import { useAccount, useWriteContract } from "wagmi";
 import {
   PRAWR_SETTLEMENT_ABI,
   PRAWR_SETTLEMENT_ADDRESS,
+  claimPayout,
+  finalizePayoutClaim,
   getCreatorPayoutSummary,
   type CreatorPayoutSummary,
 } from "../lib/prawr-api";
@@ -27,19 +23,7 @@ const fallbackSummary: CreatorPayoutSummary = {
 
 export default function CreatorDashboardPage() {
   const { address } = useAccount();
-  const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
-  const { data: onchainBalance, refetch: refetchOnchainBalance } =
-    useReadContract({
-      abi: PRAWR_SETTLEMENT_ABI,
-      address: PRAWR_SETTLEMENT_ADDRESS,
-      functionName: "creatorBalances",
-      args: address ? [address] : undefined,
-      query: {
-        enabled: Boolean(address && PRAWR_SETTLEMENT_ADDRESS),
-        refetchInterval: 10_000,
-      },
-    });
   const [summary, setSummary] = useState<CreatorPayoutSummary>(fallbackSummary);
   const [loading, setLoading] = useState(false);
   const [claiming, setClaiming] = useState(false);
@@ -72,11 +56,9 @@ export default function CreatorDashboardPage() {
     loadSummary();
   }, [address]);
 
-  const claimableAmount = onchainBalance ?? 0n;
-  const claimable =
-    claimableAmount > 0n
-      ? `$${Number(formatUnits(claimableAmount, 18)).toFixed(2)}`
-      : "$0.00";
+  const claimable = summary.totalReceived
+    ? `$${Number(summary.totalReceived).toFixed(2)}`
+    : "$0.00";
   const settlementIndicator = !PRAWR_SETTLEMENT_ADDRESS
     ? "Settlement contract not configured"
     : loading
@@ -87,8 +69,8 @@ export default function CreatorDashboardPage() {
     if (
       !address ||
       !PRAWR_SETTLEMENT_ADDRESS ||
-      !publicClient ||
-      claimableAmount <= 0n
+      !summary.totalReceived ||
+      Number(summary.totalReceived) <= 0
     ) {
       return;
     }
@@ -98,32 +80,40 @@ export default function CreatorDashboardPage() {
     setClaimMessage(null);
 
     try {
-      if (publicClient.chain?.id !== ARC_CHAIN.id) {
-        throw new Error(`Connect your wallet to ${ARC_CHAIN.name}`);
-      }
-      const contractCode = await publicClient.getCode({
-        address: PRAWR_SETTLEMENT_ADDRESS,
+      const queuedClaim = await claimPayout({
+        creatorWallet: address,
+        amount: summary.totalReceived,
       });
-      if (!contractCode || contractCode === "0x") {
-        throw new Error(
-          "No settlement contract is deployed at the configured address"
-        );
-      }
-      const transactionHash = await writeContractAsync({
+
+      const claimAmount = parseUnits(summary.totalReceived, 18);
+
+      await writeContractAsync({
         abi: PRAWR_SETTLEMENT_ABI,
         address: PRAWR_SETTLEMENT_ADDRESS,
-        functionName: "claimCreatorBalance",
-        args: [address, claimableAmount],
+        functionName: "claim",
+        args: [address, claimAmount],
       });
-      const receipt = await publicClient.waitForTransactionReceipt({
-        hash: transactionHash,
-      });
-      if (receipt.status !== "success") {
-        throw new Error("Creator payout transaction failed");
-      }
-      await refetchOnchainBalance();
 
-      setClaimMessage(`Payout confirmed: ${transactionHash.slice(0, 12)}`);
+      const finalizedClaim = await finalizePayoutClaim({
+        creatorWallet: address,
+        claimId: queuedClaim.claimId,
+      });
+
+      setClaimMessage(`Claim executed: ${finalizedClaim.claimId.slice(0, 12)}`);
+      setSummary((current) => ({
+        ...current,
+        pendingClaims: [
+          ...(current.pendingClaims ?? []),
+          {
+            claimId: finalizedClaim.claimId,
+            creatorWallet: finalizedClaim.creatorWallet,
+            amount: finalizedClaim.amount,
+            status: finalizedClaim.status,
+            createdAt: finalizedClaim.createdAt,
+          },
+        ],
+        totalReceived: "0",
+      }));
     } catch (claimError) {
       console.error("Withdrawal claim failed", claimError);
       setError("Withdrawal request failed");
@@ -185,7 +175,8 @@ export default function CreatorDashboardPage() {
                 !address ||
                 !PRAWR_SETTLEMENT_ADDRESS ||
                 claiming ||
-                claimableAmount <= 0n
+                !summary.totalReceived ||
+                Number(summary.totalReceived) <= 0
               }
               onClick={handleWithdraw}
               className="rounded-full bg-brand-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"

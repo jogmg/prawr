@@ -53,9 +53,3 @@ export class CreateSessionDto {
   @IsString()
   issuedAt?: string;
 }
-
-export class WatchSessionControlDto {
-  @IsString()
-  @IsNotEmpty()
-  accessToken!: string;
-}

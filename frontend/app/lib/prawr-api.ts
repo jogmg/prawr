@@ -32,25 +32,7 @@ export function buildSessionAuthorizationMessage({
 export const PRAWR_SETTLEMENT_ABI = [
   {
     type: "function",
-    name: "creatorBalances",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "openSession",
-    stateMutability: "payable",
-    inputs: [
-      { name: "sessionId", type: "bytes32" },
-      { name: "creator", type: "address" },
-      { name: "expiresAt", type: "uint64" },
-    ],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "claimCreatorBalance",
+    name: "claim",
     stateMutability: "nonpayable",
     inputs: [
       { name: "recipient", type: "address" },
@@ -60,7 +42,8 @@ export const PRAWR_SETTLEMENT_ABI = [
   },
 ] as const;
 
-export { PRAWR_SETTLEMENT_ADDRESS } from "./arc-network";
+export const PRAWR_SETTLEMENT_ADDRESS = process.env
+  .NEXT_PUBLIC_PRAWR_SETTLEMENT_ADDRESS as `0x${string}` | undefined;
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
@@ -87,15 +70,7 @@ export async function createSession(payload: {
   maxCharge: string;
   authorizationHash: string;
   issuedAt?: string;
-}): Promise<{
-  sessionId: string;
-  streamId: string;
-  viewerWallet: string;
-  maxCharge: string;
-  accessToken: string;
-  status: "authorized";
-  charge: string;
-}> {
+}) {
   const response = await fetch(`${API_BASE_URL}/streams/sessions`, {
     method: "POST",
     headers: {
@@ -108,66 +83,7 @@ export async function createSession(payload: {
     throw new Error(`Failed to create session: ${response.status}`);
   }
 
-  return (await response.json()) as {
-    sessionId: string;
-    streamId: string;
-    viewerWallet: string;
-    maxCharge: string;
-    accessToken: string;
-    status: "authorized";
-    charge: string;
-  };
-}
-
-export type WatchSessionSnapshot = {
-  sessionId: string;
-  streamId: string;
-  viewerWallet: string;
-  creatorWallet: string;
-  ratePerMinute: number;
-  maxCharge: string;
-  status: "authorized" | "playing" | "paused" | "completed" | "capped";
-  billableMilliseconds: number;
-  charge: string;
-  startedAt?: string;
-  stoppedAt?: string;
-};
-
-export function startWatchSession(sessionId: string, accessToken: string) {
-  return controlWatchSession(sessionId, accessToken, "start");
-}
-
-export function heartbeatWatchSession(sessionId: string, accessToken: string) {
-  return controlWatchSession(sessionId, accessToken, "heartbeat");
-}
-
-export function resumeWatchSession(sessionId: string, accessToken: string) {
-  return controlWatchSession(sessionId, accessToken, "resume");
-}
-
-export function stopWatchSession(sessionId: string, accessToken: string) {
-  return controlWatchSession(sessionId, accessToken, "stop");
-}
-
-async function controlWatchSession(
-  sessionId: string,
-  accessToken: string,
-  action: "start" | "heartbeat" | "pause" | "resume" | "stop"
-): Promise<WatchSessionSnapshot> {
-  const response = await fetch(
-    `${API_BASE_URL}/streams/sessions/${sessionId}/${action}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accessToken }),
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(`Failed to ${action} watch session: ${response.status}`);
-  }
-
-  return (await response.json()) as WatchSessionSnapshot;
+  return response.json();
 }
 
 export type CreatorPayoutSummary = {

@@ -9,9 +9,9 @@ Prawr separates the viewer experience from the creator experience.
 - Public homepage for live discovery
 - Stream cards showing title, creator, category, rate, and live status
 - /watch/{slug} route for a locked access flow
-- viewer-funded capped escrow before a paid viewing session
-- server-clock usage derived from heartbeats (prototype; playback is not verified)
-- operator-finalized charge with unused-cap refund
+- wallet authorization before a paid viewing session
+- meter usage with server-side validation
+- signed receipts and periodic settlement
 
 ### Creator experience
 
@@ -24,18 +24,19 @@ Prawr separates the viewer experience from the creator experience.
 
 1. Creator publishes stream metadata and rate.
 2. Viewer browses and selects a stream.
-3. Viewer reviews the terms and funds a capped escrow session from their connected wallet.
-4. The backend meters server elapsed time between client heartbeats and caps large gaps; it does not prove that playback occurred.
-5. The configured settlement operator finalizes no more than the funded cap; unused funds become refundable.
-6. Creator withdraws the chain-confirmed creator balance.
+3. Viewer reviews payment terms and authorizes a session cap.
+4. Viewer watches the stream and backend meters valid activity.
+5. The backend validates usage and emits signed cumulative receipts.
+6. The backend aggregates receipts and settles net positions.
+7. Creator balance is updated and claimable funds can be withdrawn.
 
 ## Recommended stack
 
 - Frontend: Next.js + Tailwind + wagmi + ConnectKit + viem
 - Backend: NestJS + TypeScript + MongoDB + Mongoose
 - Contracts: Solidity + Foundry
-- Settlement rail: viewer-funded Arc-native session escrow; Circle Gateway Nanopayments may serve separate discrete paid resources
+- Settlement rail: Circle Gateway Nanopayments preferred; Arc-native fallback contract as a secure backup
 
 ## Critical design rule
 
-The frontend counter is UX only. The backend derives a provisional amount from server-clock heartbeats, but those signals are not proof of playback. Escrow funding is disabled by default; chain funding verification, durable state, and automatic finalization are not implemented.
+The frontend counter is UX only. The backend must derive the real billable amount from validated session and receipt state, not from a client timer.

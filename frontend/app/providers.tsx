@@ -3,14 +3,16 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConnectKitProvider, getDefaultConfig } from "connectkit";
 import { useState } from "react";
+import { arcTestnet } from "viem/chains";
 import { WagmiProvider, createConfig, http } from "wagmi";
-import { ARC_CHAIN, ARC_RPC_URL } from "./lib/arc-network";
 
 const config = createConfig(
   getDefaultConfig({
-    chains: [ARC_CHAIN],
+    chains: [arcTestnet],
     transports: {
-      [ARC_CHAIN.id]: http(ARC_RPC_URL),
+      [arcTestnet.id]: http(
+        process.env.NEXT_PUBLIC_ARC_RPC_URL ?? "https://rpc.testnet.arc.io"
+      ),
     },
     walletConnectProjectId:
       process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "demo-project-id",
