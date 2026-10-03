@@ -1,0 +1,11 @@
+node_modules
+.next
+backend/dist
+backend/node_modules
+frontend/.next
+frontend/node_modules
+contracts/cache
+contracts/out
+.env
+.DS_Store
+coverage

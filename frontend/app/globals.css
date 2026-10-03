@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #06121d;
+  --panel: rgba(13, 23, 34, 0.92);
+  --panel-border: rgba(148, 163, 184, 0.2);
+  --text: #e2e8f0;
+  --muted: #9fb3c8;
+  --brand: #1e88ff;
+  --brand-strong: #1565c0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(
+      circle at top,
+      rgba(30, 136, 255, 0.18),
+      transparent 25%
+    ),
+    linear-gradient(180deg, #06121d 0%, #0c1725 100%);
+  color: var(--text);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  text-decoration: none;
+}
+
+.card {
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 20px;
+  backdrop-filter: blur(8px);
+}
+
+button {
+  cursor: pointer;
+}
