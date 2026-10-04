@@ -12,7 +12,9 @@ async function bootstrap() {
     })
   );
 
-  app.enableCors();
+  app.enableCors({
+    exposedHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE"],
+  });
   await app.listen(process.env.PORT ?? 3001);
 }
 

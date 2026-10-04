@@ -32,4 +32,19 @@ export class SettlementController {
       body.claimId
     );
   }
+
+  @Get("gateway/balances/:address")
+  async getGatewayBalances(@Param("address") address: string) {
+    return this.settlementService.getGatewayBalances(address);
+  }
+
+  @Post("gateway/withdraw")
+  async withdrawFromGateway(
+    @Body() body: { creatorWallet: string; amount: string }
+  ) {
+    return this.settlementService.withdrawFromGateway(
+      body.creatorWallet,
+      body.amount
+    );
+  }
 }

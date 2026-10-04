@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+﻿import { Injectable } from "@nestjs/common";
 import { recoverMessageAddress } from "viem";
 
 export interface CalculateChargeInput {
@@ -18,6 +18,8 @@ export interface CreateReceiptInput {
   viewerWallet: string;
   creatorWallet: string;
   charge: string;
+  transaction?: string;
+  network?: string;
 }
 
 export interface ReceiptRecord {
@@ -27,6 +29,8 @@ export interface ReceiptRecord {
   viewerWallet: string;
   creatorWallet: string;
   charge: string;
+  transaction?: string;
+  network?: string;
   createdAt: string;
 }
 
@@ -44,6 +48,36 @@ export interface PayoutClaimRecord {
   amount: string;
   status: "pending" | "claimed";
   createdAt: string;
+}
+
+export interface GatewayBalanceResponse {
+  wallet: { balance: string; formatted: string };
+  gateway: {
+    available: string;
+    formatted: string;
+    pending: string;
+    formattedPending: string;
+  };
+}
+
+export interface GatewayWithdrawResponse {
+  success: boolean;
+  mintTxHash?: string;
+  amount?: string;
+}
+
+/**
+ * Circle Gateway balance shape returned by the SDK's getBalances() (bigint values)
+ * or a serialized version of it (string values).
+ */
+export interface GatewaySdkBalances {
+  wallet: { balance: bigint | string; formatted: string };
+  gateway: {
+    total: bigint | string;
+    available: bigint | string;
+    formattedTotal?: string;
+    formattedAvailable?: string;
+  };
 }
 
 @Injectable()
@@ -178,6 +212,8 @@ export class SettlementService {
     viewerWallet,
     creatorWallet,
     charge,
+    transaction,
+    network,
   }: CreateReceiptInput): ReceiptRecord {
     if (!sessionId || !streamId) {
       throw new Error("sessionId and streamId are required");
@@ -200,6 +236,8 @@ export class SettlementService {
       viewerWallet,
       creatorWallet,
       charge: Number(amount).toFixed(6).replace(/0+$/, "").replace(/\.$/, ""),
+      transaction,
+      network,
       createdAt: new Date().toISOString(),
     };
 
@@ -307,5 +345,135 @@ export class SettlementService {
       receipts,
       pendingClaims,
     };
+  }
+
+  /**
+   * Normalize the GatewayClient.getBalances() result (bigint or string fields)
+   * into the GatewayBalanceResponse shape consumed by the frontend.
+   */
+  private normalizeSdkBalances(
+    balances: GatewaySdkBalances
+  ): GatewayBalanceResponse {
+    const toStr = (value: bigint | string | undefined): string =>
+      value === undefined
+        ? "0"
+        : typeof value === "bigint"
+        ? value.toString()
+        : String(value);
+
+    return {
+      wallet: {
+        balance: toStr(balances.wallet?.balance),
+        formatted: balances.wallet?.formatted ?? "0",
+      },
+      gateway: {
+        available: toStr(balances.gateway?.available),
+        formatted: balances.gateway?.formattedAvailable ?? "0",
+        pending: "0",
+        formattedPending: "0",
+      },
+    };
+  }
+
+  async getGatewayBalances(address: string): Promise<GatewayBalanceResponse> {
+    this.validateWalletAddress(address, "creator");
+
+    const apiKey = process.env.GATEWAY_API_KEY;
+    const facilitatorUrl = (
+      process.env.GATEWAY_FACILITATOR_URL ??
+      (process.env.GATEWAY_CHAIN?.includes("5042002")
+        ? "https://gateway-api-testnet.circle.com"
+        : "https://gateway-api.circle.com")
+    ).replace(/\/$/, "");
+
+    try {
+      // Circle Gateway balances endpoint (same shape the SDK's
+      // GatewayClient.getBalances() uses under the hood).
+      const response = await fetch(`${facilitatorUrl}/v1/balances`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          token: "USDC",
+          sources: [
+            {
+              depositor: address,
+              // Arc Testnet Gateway domain (GATEWAY_DOMAINS.arcTestnet)
+              domain: 26,
+            },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Gateway API error: ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        balances?: Array<{
+          balance?: string;
+          withdrawing?: string;
+          withdrawable?: string;
+        }>;
+      };
+
+      const entry = data.balances?.[0];
+      if (!entry) {
+        // No Gateway balance yet for this depositor — return zeros.
+        return {
+          wallet: { balance: "0", formatted: "0" },
+          gateway: {
+            available: "0",
+            formatted: "0",
+            pending: "0",
+            formattedPending: "0",
+          },
+        };
+      }
+
+      return {
+        wallet: { balance: "0", formatted: "0" },
+        gateway: {
+          available: entry.balance ?? "0",
+          formatted: entry.balance ?? "0",
+          pending: entry.withdrawable ?? "0",
+          formattedPending: entry.withdrawable ?? "0",
+        },
+      };
+    } catch {
+      // Gateway unavailable (e.g. local dev without network access) — return zeros.
+      return {
+        wallet: { balance: "0", formatted: "0" },
+        gateway: {
+          available: "0",
+          formatted: "0",
+          pending: "0",
+          formattedPending: "0",
+        },
+      };
+    }
+  }
+
+  /**
+   * Withdraw from Gateway. The actual withdrawal is signed client-side by the
+   * creator's wallet via GatewayClient.withdraw() — this endpoint only
+   * validates the request and records the payout claim for accounting.
+   */
+  async withdrawFromGateway(
+    creatorWallet: string,
+    amount: string
+  ): Promise<GatewayWithdrawResponse> {
+    this.validateWalletAddress(creatorWallet, "creator");
+
+    const amountValue = Number(amount);
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+      throw new Error("amount must be a positive decimal string");
+    }
+
+    this.createPayoutClaim(creatorWallet, amount);
+
+    return { success: true, amount };
   }
 }

@@ -2,16 +2,16 @@
 
 import { ConnectKitButton } from "connectkit";
 import { useEffect, useState } from "react";
-import { parseUnits } from "viem";
-import { useAccount, useWriteContract } from "wagmi";
+import { useAccount, useSignTypedData, useWalletClient } from "wagmi";
 import {
-  PRAWR_SETTLEMENT_ABI,
-  PRAWR_SETTLEMENT_ADDRESS,
-  claimPayout,
-  finalizePayoutClaim,
   getCreatorPayoutSummary,
   type CreatorPayoutSummary,
 } from "../lib/prawr-api";
+import {
+  getGatewayBalances,
+  withdrawFromGateway,
+  type GatewayWithdrawalSigner,
+} from "../lib/gateway-client";
 
 const fallbackSummary: CreatorPayoutSummary = {
   creatorWallet: "",
@@ -23,17 +23,22 @@ const fallbackSummary: CreatorPayoutSummary = {
 
 export default function CreatorDashboardPage() {
   const { address } = useAccount();
-  const { writeContractAsync } = useWriteContract();
+  const { data: walletClient } = useWalletClient();
+  const { signTypedDataAsync } = useSignTypedData();
   const [summary, setSummary] = useState<CreatorPayoutSummary>(fallbackSummary);
   const [loading, setLoading] = useState(false);
-  const [claiming, setClaiming] = useState(false);
+  const [withdrawing, setWithdrawing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [claimMessage, setClaimMessage] = useState<string | null>(null);
+  const [withdrawMessage, setWithdrawMessage] = useState<string | null>(null);
+  const [gatewayBalance, setGatewayBalance] = useState<string>("0");
+  const [walletBalance, setWalletBalance] = useState<string>("0");
 
   useEffect(() => {
     if (!address) {
       setSummary(fallbackSummary);
       setError(null);
+      setGatewayBalance("0");
+      setWalletBalance("0");
       return;
     }
 
@@ -44,6 +49,13 @@ export default function CreatorDashboardPage() {
       try {
         const data = await getCreatorPayoutSummary(address);
         setSummary(data);
+
+        // Also fetch Gateway balances
+        const balances = await getGatewayBalances(address);
+        setGatewayBalance(
+          Number(balances.gateway.formattedAvailable || 0).toFixed(2)
+        );
+        setWalletBalance(Number(balances.wallet.formatted || 0).toFixed(2));
       } catch (loadError) {
         console.error("Failed to load creator settlement summary", loadError);
         setError("Unable to load settlement summary");
@@ -59,66 +71,56 @@ export default function CreatorDashboardPage() {
   const claimable = summary.totalReceived
     ? `$${Number(summary.totalReceived).toFixed(2)}`
     : "$0.00";
-  const settlementIndicator = !PRAWR_SETTLEMENT_ADDRESS
-    ? "Settlement contract not configured"
-    : loading
+
+  const gatewayClaimable = `$${gatewayBalance}`;
+
+  const settlementIndicator = loading
     ? "Loading payouts..."
-    : claimMessage ?? error ?? "Settlement synced";
+    : withdrawMessage ?? error ?? "Settlement synced";
 
   const handleWithdraw = async () => {
-    if (
-      !address ||
-      !PRAWR_SETTLEMENT_ADDRESS ||
-      !summary.totalReceived ||
-      Number(summary.totalReceived) <= 0
-    ) {
+    if (!address || !walletClient || Number(gatewayBalance) <= 0) {
       return;
     }
 
-    setClaiming(true);
+    setWithdrawing(true);
     setError(null);
-    setClaimMessage(null);
+    setWithdrawMessage(null);
 
     try {
-      const queuedClaim = await claimPayout({
-        creatorWallet: address,
-        amount: summary.totalReceived,
-      });
+      // Withdraw from Gateway to wallet
+      const gatewaySigner: GatewayWithdrawalSigner = {
+        address,
+        signTypedData: (params) =>
+          signTypedDataAsync({
+            domain: params.domain,
+            types: params.types,
+            primaryType: params.primaryType,
+            message: params.message,
+          } as never),
+      };
+      const result = await withdrawFromGateway(
+        gatewayBalance,
+        address,
+        walletClient,
+        gatewaySigner
+      );
 
-      const claimAmount = parseUnits(summary.totalReceived, 18);
+      setWithdrawMessage(
+        `Withdrawal initiated: ${result.mintTxHash?.slice(0, 12)}`
+      );
 
-      await writeContractAsync({
-        abi: PRAWR_SETTLEMENT_ABI,
-        address: PRAWR_SETTLEMENT_ADDRESS,
-        functionName: "claim",
-        args: [address, claimAmount],
-      });
-
-      const finalizedClaim = await finalizePayoutClaim({
-        creatorWallet: address,
-        claimId: queuedClaim.claimId,
-      });
-
-      setClaimMessage(`Claim executed: ${finalizedClaim.claimId.slice(0, 12)}`);
-      setSummary((current) => ({
-        ...current,
-        pendingClaims: [
-          ...(current.pendingClaims ?? []),
-          {
-            claimId: finalizedClaim.claimId,
-            creatorWallet: finalizedClaim.creatorWallet,
-            amount: finalizedClaim.amount,
-            status: finalizedClaim.status,
-            createdAt: finalizedClaim.createdAt,
-          },
-        ],
-        totalReceived: "0",
-      }));
-    } catch (claimError) {
-      console.error("Withdrawal claim failed", claimError);
+      // Refresh balances after withdrawal
+      const balances = await getGatewayBalances(address);
+      setGatewayBalance(
+        Number(balances.gateway.formattedAvailable || 0).toFixed(2)
+      );
+      setWalletBalance(Number(balances.wallet.formatted || 0).toFixed(2));
+    } catch (withdrawError) {
+      console.error("Withdrawal failed", withdrawError);
       setError("Withdrawal request failed");
     } finally {
-      setClaiming(false);
+      setWithdrawing(false);
     }
   };
 
@@ -150,6 +152,8 @@ export default function CreatorDashboardPage() {
               "Earnings today",
               `$${Number(summary.totalReceived || 0).toFixed(2)}`,
             ],
+            ["Gateway Balance", gatewayClaimable],
+            ["Wallet Balance", `$${walletBalance}`],
             ["Claimable", claimable],
           ].map(([label, value]) => (
             <div key={label} className="card p-4">
@@ -173,15 +177,14 @@ export default function CreatorDashboardPage() {
               type="button"
               disabled={
                 !address ||
-                !PRAWR_SETTLEMENT_ADDRESS ||
-                claiming ||
-                !summary.totalReceived ||
-                Number(summary.totalReceived) <= 0
+                !walletClient ||
+                withdrawing ||
+                Number(gatewayBalance) <= 0
               }
               onClick={handleWithdraw}
               className="rounded-full bg-brand-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {claiming ? "Requesting..." : "Withdraw"}
+              {withdrawing ? "Withdrawing..." : "Withdraw from Gateway"}
             </button>
           </div>
 

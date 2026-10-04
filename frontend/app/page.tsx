@@ -29,7 +29,6 @@ const fallbackStreams = [
 
 export default function HomePage() {
   const [streams, setStreams] = useState<StreamRecord[]>(fallbackStreams);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const loadStreams = async () => {
@@ -43,8 +42,6 @@ export default function HomePage() {
           "Using fallback stream list because the API is unavailable.",
           error
         );
-      } finally {
-        setLoading(false);
       }
     };
 
