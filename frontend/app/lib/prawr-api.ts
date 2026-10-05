@@ -4,6 +4,7 @@ export type StreamRecord = {
   creatorId: string;
   creatorWallet: string;
   category: string;
+  playbackUrl?: string;
   ratePerMinute: number;
   status: "live" | "scheduled" | "offline";
   createdAt: string;
@@ -29,20 +30,24 @@ export type WatchSessionResponse = {
   sessionId: string;
   streamId: string;
   viewerWallet: string;
-  maxCharge: string;
   authorizationHash: string;
   createdAt: string;
-  status: "authorized";
+  status: "authorized" | "playing" | "paused" | "completed" | "capped";
   secondsWatched: number;
+  prepaidSeconds: number;
   charge: string;
   accessToken?: string;
 };
 
-export type WatchSecondResponse = {
+export type WatchBlockResponse = {
   sessionId: string;
   status: "paid" | "capped" | "completed";
   message: string;
   transaction?: string;
+  secondsGranted?: number;
+  prepaidSeconds?: number;
+  secondsWatched?: number;
+  charge?: string;
   paymentRequirements?: PaymentRequirements;
 };
 
@@ -71,19 +76,16 @@ export type CreatorPayoutSummary = {
 export function buildSessionAuthorizationMessage({
   streamId,
   viewerWallet,
-  maxCharge,
   issuedAt,
 }: {
   streamId: string;
   viewerWallet: string;
-  maxCharge: string;
   issuedAt: string;
 }) {
   return [
     "Prawr session authorization",
     `Stream: ${streamId}`,
     `Viewer: ${viewerWallet}`,
-    `Max charge: ${maxCharge} USDC`,
     `Issued at: ${issuedAt}`,
   ].join("\n");
 }
@@ -107,10 +109,56 @@ export async function listStreams(): Promise<StreamRecord[]> {
   return data;
 }
 
+export async function createStream(payload: {
+  title: string;
+  creatorId: string;
+  creatorWallet: string;
+  category: string;
+  playbackUrl: string;
+  ratePerMinute: number;
+}): Promise<StreamRecord> {
+  const response = await fetch(`${API_BASE_URL}/streams`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      message?: string | string[];
+    } | null;
+    const message = Array.isArray(body?.message)
+      ? body.message.join(" ")
+      : body?.message;
+    throw new Error(message ?? `Failed to create stream: ${response.status}`);
+  }
+
+  return response.json() as Promise<StreamRecord>;
+}
+
+export async function getStreamById(id: string): Promise<StreamRecord> {
+  const response = await fetch(
+    `${API_BASE_URL}/streams/${encodeURIComponent(id)}`,
+    {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      response.status === 404
+        ? "Stream not found."
+        : `Failed to load stream: ${response.status}`
+    );
+  }
+
+  return response.json() as Promise<StreamRecord>;
+}
+
 export async function createSession(payload: {
   streamId: string;
   viewerWallet: string;
-  maxCharge: string;
   authorizationHash: string;
   issuedAt?: string;
 }): Promise<WatchSessionResponse> {
@@ -129,14 +177,19 @@ export async function createSession(payload: {
   return response.json() as Promise<WatchSessionResponse>;
 }
 
-export async function getPaymentRequirements(
-  sessionId: string
-): Promise<{
+export async function getPaymentRequirements(sessionId: string): Promise<{
   sessionId: string;
   streamId: string;
   ratePerMinute: number;
-  chargePerSecond: string;
-  paymentRequirements: PaymentRequirements;
+  nextBlockSeconds: number;
+  nextBlockAmount: string;
+  prepaidSeconds: number;
+  charge: string;
+  paymentRequirements: {
+    price: string;
+    description: string;
+    network: string;
+  };
 }> {
   const response = await fetch(
     `${API_BASE_URL}/streams/sessions/${sessionId}/payment-requirements`,
@@ -153,22 +206,6 @@ export async function getPaymentRequirements(
   }
 
   return response.json();
-}
-
-export async function watchSecond(
-  sessionId: string
-): Promise<WatchSecondResponse> {
-  const response = await fetch(
-    `${API_BASE_URL}/streams/sessions/${sessionId}/watch`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  return response.json() as Promise<WatchSecondResponse>;
 }
 
 export async function startSession(
@@ -188,6 +225,28 @@ export async function startSession(
 
   if (!response.ok) {
     throw new Error(`Failed to start session: ${response.status}`);
+  }
+
+  return response.json() as Promise<WatchSessionResponse>;
+}
+
+export async function restoreSession(
+  sessionId: string,
+  accessToken: string
+): Promise<WatchSessionResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/streams/sessions/${sessionId}/restore`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ accessToken }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to restore session: ${response.status}`);
   }
 
   return response.json() as Promise<WatchSessionResponse>;
@@ -341,7 +400,9 @@ export async function finalizePayoutClaim(payload: {
 
 export async function getGatewayBalances(address: string) {
   const response = await fetch(
-    `${API_BASE_URL}/settlement/gateway/balances/${encodeURIComponent(address)}`,
+    `${API_BASE_URL}/settlement/gateway/balances/${encodeURIComponent(
+      address
+    )}`,
     {
       cache: "no-store",
       headers: {

@@ -1,9 +1,10 @@
 import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
 import { Document } from "mongoose";
 
-export type WatchSessionDocument = WatchSession & Document & { createdAt: Date; updatedAt: Date };
+export type WatchSessionDocument = WatchSession &
+  Document & { createdAt: Date; updatedAt: Date };
 
-@Schema({ timestamps: true, collection: "watch_sessions" })
+@Schema({ timestamps: true })
 export class WatchSession {
   @Prop({ required: true, unique: true })
   declare sessionId: string;
@@ -15,9 +16,6 @@ export class WatchSession {
   declare viewerWallet: string;
 
   @Prop({ required: true })
-  declare maxCharge: string;
-
-  @Prop({ required: true })
   declare authorizationHash: string;
 
   @Prop({ required: true, default: "authorized" })
@@ -25,6 +23,9 @@ export class WatchSession {
 
   @Prop({ default: 0 })
   declare secondsWatched: number;
+
+  @Prop({ default: 0 })
+  declare prepaidSeconds: number;
 
   @Prop({ default: "0" })
   declare charge: string;

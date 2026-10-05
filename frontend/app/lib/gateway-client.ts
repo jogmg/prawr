@@ -79,7 +79,7 @@ const gatewayMinterAbi = [
 ] as const;
 
 export type GatewayBalances = {
-  wallet: { balance: bigint; formatted: string };
+  wallet: { balance: bigint | null; formatted: string | null };
   gateway: {
     available: bigint;
     formattedAvailable: string;
@@ -193,6 +193,13 @@ export async function payForStream<T = unknown>(
       .json()
       .catch(() => undefined)
   );
+  client.setSpendControls({
+    allowedAssets: required.accepts.map(({ network, asset }) => ({
+      network,
+      asset,
+      maxAmountPerPayment: "1000000",
+    })),
+  });
   const payload = await httpClient.createPaymentPayload(required);
   const paymentHeaders = httpClient.encodePaymentSignatureHeader(payload);
   const response = await fetch(url, {
@@ -209,8 +216,17 @@ export async function payForStream<T = unknown>(
     (name) => response.headers.get(name),
     response.status
   );
-  if (!response.ok)
-    throw new Error(`Paid watch request failed: ${response.status}`);
+  if (!response.ok) {
+    const detail =
+      typeof data === "object" && data !== null && "message" in data
+        ? String((data as { message: unknown }).message)
+        : JSON.stringify(data);
+    throw new Error(
+      `Paid watch request failed: ${response.status}${
+        detail ? ` - ${detail}` : ""
+      }`
+    );
+  }
   return {
     data,
     amount: BigInt(payload.accepted.amount),
@@ -223,12 +239,14 @@ export async function getGatewayBalances(
   address: Address
 ): Promise<GatewayBalances> {
   const [balance, gatewayResponse] = await Promise.all([
-    publicClient().readContract({
-      address: ARC.usdc,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [address],
-    }),
+    publicClient()
+      .readContract({
+        address: ARC.usdc,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [address],
+      })
+      .catch(() => null),
     fetch(`${API_BASE_URL}/settlement/gateway/balances/${address}`, {
       cache: "no-store",
     }),
@@ -240,7 +258,10 @@ export async function getGatewayBalances(
   const available = parseUnits(gateway.gateway.available || "0", 6);
   const withdrawable = parseUnits(gateway.gateway.pending || "0", 6);
   return {
-    wallet: { balance, formatted: formatUnits(balance, 6) },
+    wallet: {
+      balance,
+      formatted: balance === null ? null : formatUnits(balance, 6),
+    },
     gateway: {
       available,
       formattedAvailable: formatUnits(available, 6),
@@ -254,7 +275,8 @@ export async function withdrawFromGateway(
   amount: string,
   recipient: Address,
   walletClient: WalletClient,
-  signer: GatewayWithdrawalSigner
+  signer: GatewayWithdrawalSigner,
+  feeRetry = 0
 ) {
   if (!walletClient.account) throw new Error("Connect a wallet to withdraw.");
   const value = parseUnits(amount, 6);
@@ -321,7 +343,7 @@ export async function withdrawFromGateway(
     message: intent,
   });
 
-  const response = await fetch(`${GATEWAY_API_URL}/transfer`, {
+  const response = await fetch(`${GATEWAY_API_URL}/v1/transfer`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify([{ burnIntent: intent, signature }], (_, field) =>
@@ -341,9 +363,28 @@ export async function withdrawFromGateway(
     !result.attestation ||
     !result.signature
   ) {
-    throw new Error(
-      result.message ?? result.error ?? "Gateway withdrawal failed."
+    const errorMessage =
+      result.message ?? result.error ?? "Gateway withdrawal failed.";
+    const shortfall = errorMessage.match(
+      /available\s+([0-9]+(?:\.[0-9]+)?),\s*required\s+([0-9]+(?:\.[0-9]+)?)/i
     );
+
+    if (feeRetry === 0 && shortfall) {
+      const available = parseUnits(shortfall[1], 6);
+      const required = parseUnits(shortfall[2], 6);
+      const adjustedValue = value - (required - available);
+      if (adjustedValue > 0n && adjustedValue < value) {
+        return withdrawFromGateway(
+          formatUnits(adjustedValue, 6),
+          recipient,
+          walletClient,
+          signer,
+          feeRetry + 1
+        );
+      }
+    }
+
+    throw new Error(errorMessage);
   }
 
   const mintTxHash = await walletClient.writeContract({

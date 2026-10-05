@@ -2,11 +2,15 @@
 
 ## Session authorization
 
-A viewer signs an authorization that includes the stream and maximum charge for a specific session. This is not a blockchain settlement, and it is not a per-second payment. It is a session-level spend cap.
+A viewer signs an authorization binding the session to the stream and viewer wallet. The signature does not grant spending authority; each viewing block is separately paid through x402.
 
-## Usage meter
+## Prepaid viewing blocks
 
-The backend records playback state transitions and heartbeats. These events are converted into valid billable time only after validation.
+Before playback begins, the viewer pays for 30 seconds of viewing. The backend computes the exact block price from the stream rate. Payment grants prepaid time; heartbeats consume that credit and playback pauses when it runs out. Unused prepaid time is not refunded when a viewer stops early. Viewers can continue buying blocks as long as their Gateway balance can cover each payment.
+
+The viewer explicitly pays for each next block. The client displays the server-calculated duration and amount before requesting the wallet signature. This reduces signature prompts from once per second to once per block, while keeping payment approval in the viewer's hands.
+
+Playback URLs must be protected for this to enforce payment. A public direct media URL can be played outside the app and bypass the payment gate.
 
 ## Receipt validation
 
@@ -16,7 +20,7 @@ Each receipt must:
 - be signed by the viewer wallet
 - include the correct creator identity
 - be monotonic with cumulative accounting
-- remain below the maximum authorization
+- match the amount and duration of the requested viewing block
 - not be expired
 - not be a replay of a prior valid receipt
 

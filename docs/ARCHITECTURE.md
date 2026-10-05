@@ -24,7 +24,7 @@ Prawr separates the viewer experience from the creator experience.
 
 1. Creator publishes stream metadata and rate.
 2. Viewer browses and selects a stream.
-3. Viewer reviews payment terms and authorizes a session cap.
+3. Viewer authorizes a session identity and approves each prepaid viewing block separately.
 4. Viewer watches the stream and backend meters valid activity.
 5. The backend validates usage and emits signed cumulative receipts.
 6. The backend aggregates receipts and settles net positions.

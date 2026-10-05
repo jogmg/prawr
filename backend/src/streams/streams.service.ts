@@ -1,15 +1,35 @@
-import { Injectable, Inject } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
+import { InjectModel } from "@nestjs/mongoose";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { Model } from "mongoose";
-import { randomUUID, createHash, timingSafeEqual } from "crypto";
-import { SettlementService } from "../settlement/settlement.service";
-import { Stream, StreamDocument } from "./stream.schema";
-import { WatchSession, WatchSessionDocument } from "./watch-session.schema";
+import { formatUnits, parseUnits } from "viem";
 import {
   GatewayReceipt,
   GatewayReceiptDocument,
-} from "./gateway-receipt.schema";
+} from "../gateway/gateway-receipt.schema";
+import { SettlementService } from "../settlement/settlement.service";
+import { Stream, StreamDocument } from "./schemas/stream.schema";
+import {
+  WatchSession,
+  WatchSessionDocument,
+} from "./schemas/watch-session.schema";
 
 export type StreamStatus = "live" | "scheduled" | "offline";
+
+export const WATCH_BLOCK_SECONDS = 30;
+
+export function quoteWatchBlock(ratePerMinute: number): {
+  seconds: number;
+  amount: string;
+} {
+  const perSecondAtomic = BigInt(
+    Math.max(1, Math.round((ratePerMinute / 60) * 1_000_000))
+  );
+  return {
+    seconds: WATCH_BLOCK_SECONDS,
+    amount: formatUnits(perSecondAtomic * BigInt(WATCH_BLOCK_SECONDS), 6),
+  };
+}
 
 export interface StreamRecord {
   id: string;
@@ -17,6 +37,7 @@ export interface StreamRecord {
   creatorId: string;
   creatorWallet: string;
   category: string;
+  playbackUrl: string;
   ratePerMinute: number;
   status: StreamStatus;
   createdAt: string;
@@ -26,11 +47,11 @@ export interface WatchSessionRecord {
   sessionId: string;
   streamId: string;
   viewerWallet: string;
-  maxCharge: string;
   authorizationHash: string;
   createdAt: string;
   status: "authorized" | "playing" | "paused" | "completed" | "capped";
   secondsWatched: number;
+  prepaidSeconds: number;
   charge: string;
   accessToken?: string;
   startedAt?: string;
@@ -44,6 +65,7 @@ export interface CreateStreamInput {
   creatorId: string;
   creatorWallet: string;
   category: string;
+  playbackUrl: string;
   ratePerMinute: number;
   status?: StreamStatus;
 }
@@ -51,7 +73,6 @@ export interface CreateStreamInput {
 export interface CreateSessionInput {
   streamId: string;
   viewerWallet: string;
-  maxCharge: string;
   authorizationHash: string;
   issuedAt?: string;
 }
@@ -59,12 +80,12 @@ export interface CreateSessionInput {
 @Injectable()
 export class StreamsService {
   constructor(
-    @Inject(Stream.name) private streamModel: Model<StreamDocument>,
-    @Inject(WatchSession.name)
+    @InjectModel(Stream.name) private streamModel: Model<StreamDocument>,
+    @InjectModel(WatchSession.name)
     private sessionModel: Model<WatchSessionDocument>,
-    @Inject(GatewayReceipt.name)
+    @InjectModel(GatewayReceipt.name)
     private gatewayReceiptModel: Model<GatewayReceiptDocument>,
-    private readonly settlementService = new SettlementService()
+    private readonly settlementService: SettlementService
   ) {}
 
   async listStreams(): Promise<StreamRecord[]> {
@@ -75,6 +96,7 @@ export class StreamsService {
       creatorId: stream.creatorId,
       creatorWallet: stream.creatorWallet,
       category: stream.category,
+      playbackUrl: stream.playbackUrl,
       ratePerMinute: stream.ratePerMinute,
       status: stream.status,
       createdAt: stream.createdAt.toISOString(),
@@ -90,6 +112,7 @@ export class StreamsService {
       creatorId: stream.creatorId,
       creatorWallet: stream.creatorWallet,
       category: stream.category,
+      playbackUrl: stream.playbackUrl,
       ratePerMinute: stream.ratePerMinute,
       status: stream.status,
       createdAt: stream.createdAt.toISOString(),
@@ -101,11 +124,15 @@ export class StreamsService {
     const creatorId = input.creatorId.trim();
     const creatorWallet = input.creatorWallet.trim();
     const category = input.category.trim();
+    const playbackUrl = input.playbackUrl.trim();
 
     if (!title) throw new Error("Stream title is required.");
     if (!creatorId) throw new Error("Creator id is required.");
     if (!creatorWallet) throw new Error("Creator wallet is required.");
     if (!category) throw new Error("Category is required.");
+    if (!/^https?:\/\//i.test(playbackUrl)) {
+      throw new Error("Playback URL must use HTTP or HTTPS.");
+    }
     if (!Number.isFinite(input.ratePerMinute) || input.ratePerMinute <= 0) {
       throw new Error("ratePerMinute must be a positive number.");
     }
@@ -116,6 +143,7 @@ export class StreamsService {
       creatorId,
       creatorWallet,
       category,
+      playbackUrl,
       ratePerMinute: Number(input.ratePerMinute.toFixed(3)),
       status: input.status ?? "live",
       createdAt: new Date(),
@@ -129,6 +157,7 @@ export class StreamsService {
       creatorId: stream.creatorId,
       creatorWallet: stream.creatorWallet,
       category: stream.category,
+      playbackUrl: stream.playbackUrl,
       ratePerMinute: stream.ratePerMinute,
       status: stream.status,
       createdAt: stream.createdAt.toISOString(),
@@ -143,9 +172,6 @@ export class StreamsService {
 
     if (!input.viewerWallet.trim())
       throw new Error("viewerWallet is required.");
-    if (!input.maxCharge || Number(input.maxCharge) <= 0) {
-      throw new Error("maxCharge must be a positive decimal string.");
-    }
     if (!input.authorizationHash.trim()) {
       throw new Error("authorizationHash is required.");
     }
@@ -153,7 +179,6 @@ export class StreamsService {
     await this.settlementService.verifySessionAuthorization({
       streamId: input.streamId,
       viewerWallet: input.viewerWallet.trim(),
-      maxCharge: input.maxCharge,
       authorizationHash: input.authorizationHash.trim(),
       issuedAt: input.issuedAt,
     });
@@ -167,11 +192,11 @@ export class StreamsService {
       sessionId: randomUUID(),
       streamId: input.streamId,
       viewerWallet: input.viewerWallet.trim(),
-      maxCharge: input.maxCharge,
       authorizationHash: input.authorizationHash.trim(),
       createdAt: new Date(),
       status: "authorized",
       secondsWatched: 0,
+      prepaidSeconds: 0,
       charge: "0",
       accessTokenHash,
     });
@@ -182,11 +207,11 @@ export class StreamsService {
       sessionId: session.sessionId,
       streamId: session.streamId,
       viewerWallet: session.viewerWallet,
-      maxCharge: session.maxCharge,
       authorizationHash: session.authorizationHash,
       createdAt: session.createdAt.toISOString(),
       status: session.status,
       secondsWatched: session.secondsWatched,
+      prepaidSeconds: session.prepaidSeconds ?? 0,
       charge: session.charge,
       // Raw token returned ONCE at creation; only its SHA-256 hash is stored.
       accessToken,
@@ -202,11 +227,11 @@ export class StreamsService {
       sessionId: session.sessionId,
       streamId: session.streamId,
       viewerWallet: session.viewerWallet,
-      maxCharge: session.maxCharge,
       authorizationHash: session.authorizationHash,
       createdAt: session.createdAt.toISOString(),
       status: session.status,
       secondsWatched: session.secondsWatched,
+      prepaidSeconds: session.prepaidSeconds ?? 0,
       charge: session.charge,
       startedAt: session.startedAt?.toISOString(),
       stoppedAt: session.stoppedAt?.toISOString(),
@@ -243,10 +268,29 @@ export class StreamsService {
     const stream = await this.getStreamById(session.streamId);
     if (!stream) throw new Error("Stream not found.");
 
-    session.status = "playing";
+    session.status = "paused";
     session.startedAt = new Date();
     session.lastHeartbeatAt = new Date();
     await session.save();
+
+    return this.mapSession(session);
+  }
+
+  async restoreSession(
+    sessionId: string,
+    accessToken: string
+  ): Promise<WatchSessionRecord> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) throw new Error("Session not found.");
+    if (!this.validateAccessToken(session, accessToken)) {
+      throw new Error("Invalid watch session token");
+    }
+    if (session.status === "playing") {
+      this.consumePrepaidTime(session, new Date());
+      session.status = "paused";
+      session.lastHeartbeatAt = new Date();
+      await session.save();
+    }
 
     return this.mapSession(session);
   }
@@ -264,35 +308,7 @@ export class StreamsService {
       throw new Error(`Cannot heartbeat session in status: ${session.status}`);
     }
 
-    const stream = await this.getStreamById(session.streamId);
-    if (!stream) throw new Error("Stream not found.");
-
-    const now = new Date();
-    const lastHeartbeat = session.lastHeartbeatAt ?? session.startedAt ?? now;
-    const elapsedMs = now.getTime() - lastHeartbeat.getTime();
-    const cappedElapsedMs = Math.min(elapsedMs, 30_000); // Cap at 30 seconds
-
-    session.secondsWatched += Math.floor(cappedElapsedMs / 1000);
-    session.lastHeartbeatAt = now;
-
-    // Calculate charge
-    const ratePerMinute = stream.ratePerMinute;
-    const charge = this.settlementService.calculateCharge({
-      ratePerMinute,
-      secondsWatched: session.secondsWatched,
-    });
-
-    // Validate against max charge
-    const maxCharge = Number(session.maxCharge);
-    if (Number(charge) > maxCharge) {
-      session.status = "capped";
-      session.charge = session.maxCharge;
-      session.stoppedAt = new Date();
-      await session.save();
-      return this.mapSession(session);
-    }
-
-    session.charge = charge;
+    this.consumePrepaidTime(session, new Date());
     await session.save();
 
     return this.mapSession(session);
@@ -311,22 +327,8 @@ export class StreamsService {
       throw new Error(`Cannot pause session in status: ${session.status}`);
     }
 
-    const stream = await this.getStreamById(session.streamId);
-    if (!stream) throw new Error("Stream not found.");
-
-    const now = new Date();
-    const lastHeartbeat = session.lastHeartbeatAt ?? session.startedAt ?? now;
-    const elapsedMs = now.getTime() - lastHeartbeat.getTime();
-    const cappedElapsedMs = Math.min(elapsedMs, 30_000);
-
-    session.secondsWatched += Math.floor(cappedElapsedMs / 1000);
+    this.consumePrepaidTime(session, new Date());
     session.status = "paused";
-
-    const charge = this.settlementService.calculateCharge({
-      ratePerMinute: stream.ratePerMinute,
-      secondsWatched: session.secondsWatched,
-    });
-    session.charge = charge;
 
     await session.save();
 
@@ -365,75 +367,65 @@ export class StreamsService {
     if (session.status !== "playing" && session.status !== "paused") {
       throw new Error(`Cannot stop session in status: ${session.status}`);
     }
-
-    const stream = await this.getStreamById(session.streamId);
-    if (!stream) throw new Error("Stream not found.");
-
     if (session.status === "playing") {
-      const now = new Date();
-      const lastHeartbeat = session.lastHeartbeatAt ?? session.startedAt ?? now;
-      const elapsedMs = now.getTime() - lastHeartbeat.getTime();
-      const cappedElapsedMs = Math.min(elapsedMs, 30_000);
-      session.secondsWatched += Math.floor(cappedElapsedMs / 1000);
+      this.consumePrepaidTime(session, new Date());
     }
-
-    const charge = this.settlementService.calculateCharge({
-      ratePerMinute: stream.ratePerMinute,
-      secondsWatched: session.secondsWatched,
-    });
-
-    session.status =
-      Number(charge) >= Number(session.maxCharge) ? "capped" : "completed";
-    session.charge = charge;
+    session.status = "completed";
     session.stoppedAt = new Date();
     await session.save();
 
     return this.mapSession(session);
   }
 
-  async recordWatchSecond(
+  async recordWatchBlock(
     sessionId: string,
     paidAmount: string,
+    blockSeconds: number,
     transaction?: string,
     network?: string
   ): Promise<WatchSessionRecord> {
     const session = await this.sessionModel.findOne({ sessionId }).exec();
     if (!session) throw new Error("Session not found.");
 
-    if (session.status !== "playing") {
+    if (session.status !== "playing" && session.status !== "paused") {
       throw new Error(
         `Cannot record payment for session in status: ${session.status}`
       );
     }
+    if ((session.prepaidSeconds ?? 0) > 0) {
+      throw new Error("The current prepaid viewing block has not been used.");
+    }
 
-    const amount = Number(paidAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const amount = parseUnits(paidAmount, 6);
+    if (amount <= 0n || !Number.isInteger(blockSeconds) || blockSeconds <= 0) {
       throw new Error("paidAmount must be a positive USDC amount.");
     }
 
-    const newCharge = Number((Number(session.charge) + amount).toFixed(6));
-    if (newCharge > Number(session.maxCharge)) {
-      throw new Error("Session charge exceeds the authorization cap.");
-    }
-
-    session.secondsWatched += 1;
-    session.charge =
-      newCharge.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") || "0";
-    if (newCharge >= Number(session.maxCharge)) {
-      session.status = "capped";
-      session.stoppedAt = new Date();
-    }
-    await session.save();
-
     const stream = await this.getStreamById(session.streamId);
     if (!stream) throw new Error("Stream not found.");
+    const quote = quoteWatchBlock(stream.ratePerMinute);
+    if (
+      blockSeconds !== quote.seconds ||
+      amount !== parseUnits(quote.amount, 6)
+    ) {
+      throw new Error("Payment does not match the next viewing block.");
+    }
+
+    const newCharge = parseUnits(session.charge, 6) + amount;
+
+    session.prepaidSeconds = (session.prepaidSeconds ?? 0) + blockSeconds;
+    session.charge = formatUnits(newCharge, 6);
+    session.status = "paused";
+    session.lastHeartbeatAt = new Date();
+    await session.save();
+
     await this.gatewayReceiptModel.create({
       receiptId: randomUUID(),
       sessionId: session.sessionId,
       streamId: session.streamId,
       viewerWallet: session.viewerWallet,
       creatorWallet: stream.creatorWallet,
-      amount: paidAmount,
+      amount: formatUnits(amount, 6),
       transaction,
       network,
     });
@@ -441,21 +433,46 @@ export class StreamsService {
     return this.mapSession(session);
   }
 
+  private consumePrepaidTime(session: WatchSessionDocument, now: Date): void {
+    const lastHeartbeat = session.lastHeartbeatAt ?? session.startedAt ?? now;
+    const elapsedSeconds = Math.min(
+      Math.floor((now.getTime() - lastHeartbeat.getTime()) / 1000),
+      WATCH_BLOCK_SECONDS
+    );
+    if (elapsedSeconds <= 0) return;
+    const consumedSeconds = Math.min(
+      Math.max(elapsedSeconds, 0),
+      session.prepaidSeconds ?? 0
+    );
+    session.secondsWatched += consumedSeconds;
+    session.prepaidSeconds = Math.max(
+      (session.prepaidSeconds ?? 0) - consumedSeconds,
+      0
+    );
+    session.lastHeartbeatAt = new Date(
+      lastHeartbeat.getTime() + consumedSeconds * 1000
+    );
+
+    if (session.prepaidSeconds === 0) {
+      session.lastHeartbeatAt = now;
+      session.status = "paused";
+    }
+  }
+
   private mapSession(session: WatchSessionDocument): WatchSessionRecord {
     return {
       sessionId: session.sessionId,
       streamId: session.streamId,
       viewerWallet: session.viewerWallet,
-      maxCharge: session.maxCharge,
       authorizationHash: session.authorizationHash,
       createdAt: session.createdAt.toISOString(),
       status: session.status,
       secondsWatched: session.secondsWatched,
+      prepaidSeconds: session.prepaidSeconds ?? 0,
       charge: session.charge,
       startedAt: session.startedAt?.toISOString(),
       stoppedAt: session.stoppedAt?.toISOString(),
       lastHeartbeatAt: session.lastHeartbeatAt?.toISOString(),
-      accessTokenHash: session.accessTokenHash,
     };
   }
 }

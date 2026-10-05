@@ -8,13 +8,9 @@ Prawr is a decentralized micropayment streaming MVP built on Arc. The project is
 
 ## Current status
 
-This repository is the initial implementation scaffold for Phase 1 and the early architecture baseline. It includes:
+The Arc Testnet MVP currently supports Mongo-backed stream discovery, creator stream management, direct MP4/WebM playback, wallet-signed session caps, per-second Circle Gateway x402 payments during active playback, and persisted payment receipts. Creator summaries read those receipts, and Gateway payments are addressed to the stream creator's wallet.
 
-- Arc-first project structure
-- backend service skeleton
-- frontend app skeleton
-- contract skeleton for settlement logic
-- project docs and architecture notes
+Video hosting and live ingest are not implemented. A creator must provide a publicly reachable direct MP4 or WebM URL that the viewer's browser can play. The player pauses metering while paused or buffering. The settlement contract remains scaffolding; Gateway receipts are not rolled into contract payouts.
 
 ## Getting started
 
@@ -31,9 +27,13 @@ wallet or deploying the settlement contract, copy the app examples and fill in
 your local values:
 
 ```powershell
+Copy-Item backend/.env.example backend/.env
 Copy-Item frontend/.env.example frontend/.env
 Copy-Item contracts/.env.example contracts/.env
 ```
+
+Start MongoDB locally or set `MONGODB_URI` in `backend/.env`. Nest loads this
+file through `ConfigModule`; the API defaults to port `3001`.
 
 `frontend/.env` is read by Next.js. Set these values there:
 
@@ -46,6 +46,12 @@ Copy-Item contracts/.env.example contracts/.env
   contract address. Leave it empty until deployment; payout actions stay
   disabled without it.
 - `NEXT_PUBLIC_API_BASE_URL` points the frontend to the NestJS API.
+
+Set `GATEWAY_API_KEY` and the optional fallback recipient in `backend/.env`,
+with `GATEWAY_FACILITATOR_URL=https://gateway-api-testnet.circle.com`. Keep
+Circle credentials server-side; never use a `NEXT_PUBLIC_` variable for a
+secret. Gateway payments are sent to each stream's `creatorWallet`, so create a
+test stream with the connected creator wallet address.
 
 `contracts/.env` is used only when deploying from the contracts directory with
 Arc Foundry:
@@ -81,14 +87,13 @@ Copy the `Deployed to` address from the output into
 frontend so Next.js includes the value. Confirm the deployment on the [Arc
 Testnet Explorer](https://explorer.testnet.arc.io/).
 
-The contract and creator claim UI are wired, but live receipt settlement is not
-enabled. The public receipt-creation endpoint is intentionally unavailable until
-the backend implements server-side playback metering and signed cumulative
-receipt validation; the current in-memory service does not do that. Do not fund
-an operator or use real funds until that path is implemented and tested. The
-Arc settings in `backend/.env.example` are placeholders for a future worker; the
-current backend reads `PORT` from the process environment and does not load
-`.env` files or submit chain transactions.
+Connect the creator wallet in `/creator` and use **Create Stream** to save a
+title, category, rate, and publicly reachable direct MP4/WebM playback URL. The
+homepage and watch route then use the Mongo-backed stream ID. Each successful
+Gateway-paid second while the video is playing creates a receipt in MongoDB.
+This is testnet code only and has not been validated with live Circle
+credentials; use testnet funds only. The Arc contract deployment settings are
+separate and do not participate in the current Gateway watch flow.
 
 ## Architecture highlights
 

@@ -9,7 +9,7 @@
 
 ## Key controls
 
-- max authorization cap enforcement
+- exact per-block payment verification before granting viewing time
 - session expiration enforcement
 - cumulative receipt monotonicity
 - duplicate settlement prevention

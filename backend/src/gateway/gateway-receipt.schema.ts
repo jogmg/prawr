@@ -3,7 +3,7 @@ import { Document } from "mongoose";
 
 export type GatewayReceiptDocument = GatewayReceipt & Document;
 
-@Schema({ timestamps: true, collection: "gateway_receipts" })
+@Schema({ timestamps: true })
 export class GatewayReceipt {
   @Prop({ required: true, unique: true })
   declare receiptId: string;

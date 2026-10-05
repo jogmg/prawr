@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
   createGatewayMiddleware,
   type GatewayMiddleware as SdkGatewayMiddleware,
@@ -17,24 +18,37 @@ import {
  */
 @Injectable()
 export class GatewayMiddleware {
-  private readonly config = {
-    sellerAddress: process.env.GATEWAY_SELLER_ADDRESS ?? "",
-    networks: process.env.GATEWAY_CHAIN ?? "eip155:5042002",
-    facilitatorUrl:
-      process.env.GATEWAY_FACILITATOR_URL ??
-      "https://gateway-api-testnet.circle.com",
-    description: "Prawr stream access",
-    headers: process.env.GATEWAY_API_KEY
-      ? { Authorization: `Bearer ${process.env.GATEWAY_API_KEY}` }
-      : undefined,
+  private readonly config: {
+    sellerAddress: string;
+    networks: string;
+    facilitatorUrl: string;
+    description: string;
+    headers?: Record<string, string>;
   };
+
+  constructor(config: ConfigService) {
+    const apiKey = config.get<string>("GATEWAY_API_KEY");
+    this.config = {
+      sellerAddress: config.get<string>("GATEWAY_SELLER_ADDRESS", ""),
+      networks: config.get<string>("GATEWAY_CHAIN", "eip155:5042002"),
+      facilitatorUrl: config.get<string>(
+        "GATEWAY_FACILITATOR_URL",
+        "https://gateway-api-testnet.circle.com"
+      ),
+      description: "Prawr stream access",
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+    };
+  }
 
   /**
    * Returns the Express-compatible middleware for a given price string
    * (dollars, e.g. "0.000333" for one second of a $0.02/min stream).
    */
-  require(price: string, expectedPayer?: string) {
-    let middleware: SdkGatewayMiddleware = createGatewayMiddleware(this.config);
+  require(price: string, expectedPayer?: string, payTo?: string) {
+    let middleware: SdkGatewayMiddleware = createGatewayMiddleware({
+      ...this.config,
+      sellerAddress: payTo ?? this.config.sellerAddress,
+    });
     if (expectedPayer) {
       middleware = middleware.onBeforeVerify(async ({ paymentPayload }) => {
         const authorization = (

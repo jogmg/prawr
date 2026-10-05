@@ -1,9 +1,10 @@
 import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
 import { Document } from "mongoose";
 
-export type StreamDocument = Stream & Document & { createdAt: Date; updatedAt: Date };
+export type StreamDocument = Stream &
+  Document & { createdAt: Date; updatedAt: Date };
 
-@Schema({ timestamps: true, collection: "streams" })
+@Schema({ timestamps: true })
 export class Stream {
   @Prop({ required: true, unique: true })
   declare id: string;
@@ -21,9 +22,16 @@ export class Stream {
   declare category: string;
 
   @Prop({ required: true })
+  declare playbackUrl: string;
+
+  @Prop({ required: true })
   declare ratePerMinute: number;
 
-  @Prop({ required: true, enum: ["live", "scheduled", "offline"], default: "live" })
+  @Prop({
+    required: true,
+    enum: ["live", "scheduled", "offline"],
+    default: "live",
+  })
   declare status: "live" | "scheduled" | "offline";
 
   @Prop()

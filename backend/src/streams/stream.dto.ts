@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsUrl,
 } from "class-validator";
 
 export class CreateStreamDto {
@@ -23,6 +24,9 @@ export class CreateStreamDto {
   @IsNotEmpty()
   category!: string;
 
+  @IsUrl({ protocols: ["http", "https"], require_protocol: true })
+  playbackUrl!: string;
+
   @IsNumber()
   @IsPositive()
   ratePerMinute!: number;
@@ -40,10 +44,6 @@ export class CreateSessionDto {
   @IsString()
   @IsNotEmpty()
   viewerWallet!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  maxCharge!: string;
 
   @IsString()
   @IsNotEmpty()

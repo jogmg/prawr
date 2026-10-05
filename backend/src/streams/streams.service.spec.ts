@@ -1,3 +1,10 @@
+jest.mock("@nestjs/mongoose", () => ({
+  InjectModel: () => () => undefined,
+}));
+jest.mock("../gateway/gateway-receipt.schema", () => ({
+  GatewayReceipt: { name: "GatewayReceipt" },
+}));
+
 import { SettlementService } from "../settlement/settlement.service";
 
 describe("SettlementService - Unit Tests", () => {
@@ -11,14 +18,15 @@ describe("SettlementService - Unit Tests", () => {
     const message = service.buildAuthorizationMessage({
       streamId: "test_stream",
       viewerWallet: "0x1234567890123456789012345678901234567890",
-      maxCharge: "0.02",
       issuedAt: "2026-10-03T00:00:00.000Z",
     });
 
     expect(message).toContain("Prawr session authorization");
     expect(message).toContain("Stream: test_stream");
-    expect(message).toContain("Viewer: 0x1234567890123456789012345678901234567890");
-    expect(message).toContain("Max charge: 0.02 USDC");
+    expect(message).toContain(
+      "Viewer: 0x1234567890123456789012345678901234567890"
+    );
+    expect(message).not.toContain("Max charge");
     expect(message).toContain("Issued at: 2026-10-03T00:00:00.000Z");
   });
 
@@ -31,24 +39,13 @@ describe("SettlementService - Unit Tests", () => {
     expect(charge).toBe("0.02");
   });
 
-  it("validates authorization cap correctly", () => {
-    const charge = service.validateAuthorizationCap({
+  it("calculates cumulative charge without imposing a session limit", () => {
+    const charge = service.calculateCharge({
       ratePerMinute: 0.02,
-      secondsWatched: 120,
-      maxCharge: "0.05",
+      secondsWatched: 6_000,
     });
 
-    expect(charge).toBe("0.04");
-  });
-
-  it("throws when charge exceeds authorization cap", () => {
-    expect(() =>
-      service.validateAuthorizationCap({
-        ratePerMinute: 0.02,
-        secondsWatched: 300,
-        maxCharge: "0.05",
-      })
-    ).toThrow("Session charge exceeds the authorization cap");
+    expect(charge).toBe("2");
   });
 
   it("creates a receipt with valid input", () => {
@@ -63,8 +60,12 @@ describe("SettlementService - Unit Tests", () => {
     expect(receipt.receiptId).toBeTruthy();
     expect(receipt.sessionId).toBe("session_123");
     expect(receipt.streamId).toBe("stream_123");
-    expect(receipt.viewerWallet).toBe("0x1111111111111111111111111111111111111111");
-    expect(receipt.creatorWallet).toBe("0x2222222222222222222222222222222222222222");
+    expect(receipt.viewerWallet).toBe(
+      "0x1111111111111111111111111111111111111111"
+    );
+    expect(receipt.creatorWallet).toBe(
+      "0x2222222222222222222222222222222222222222"
+    );
     expect(receipt.charge).toBe("0.02");
     expect(receipt.createdAt).toBeTruthy();
   });
@@ -76,7 +77,9 @@ describe("SettlementService - Unit Tests", () => {
     );
 
     expect(claim.claimId).toBeTruthy();
-    expect(claim.creatorWallet).toBe("0x1111111111111111111111111111111111111111");
+    expect(claim.creatorWallet).toBe(
+      "0x1111111111111111111111111111111111111111"
+    );
     expect(claim.amount).toBe("1.75");
     expect(claim.status).toBe("pending");
   });
@@ -96,7 +99,7 @@ describe("SettlementService - Unit Tests", () => {
     expect(executedClaim.claimId).toBe(claim.claimId);
   });
 
-  it("aggregates creator payout summary", () => {
+  it("aggregates creator payout summary", async () => {
     const creatorWallet = "0x1111111111111111111111111111111111111111";
 
     service.createReceipt({
@@ -115,7 +118,7 @@ describe("SettlementService - Unit Tests", () => {
       charge: "1.25",
     });
 
-    const totals = service.getCreatorPayoutSummary(creatorWallet);
+    const totals = await service.getCreatorPayoutSummary(creatorWallet);
 
     expect(totals.totalReceived).toBe("1.75");
     expect(totals.receiptCount).toBe(2);

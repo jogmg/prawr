@@ -1,15 +1,16 @@
 ﻿import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { InjectModel } from "@nestjs/mongoose";
+import type { Model } from "mongoose";
 import { recoverMessageAddress } from "viem";
+import {
+  GatewayReceipt,
+  type GatewayReceiptDocument,
+} from "../gateway/gateway-receipt.schema";
 
 export interface CalculateChargeInput {
   ratePerMinute: number;
   secondsWatched: number;
-}
-
-export interface ValidateAuthorizationCapInput {
-  ratePerMinute: number;
-  secondsWatched: number;
-  maxCharge: string;
 }
 
 export interface CreateReceiptInput {
@@ -37,7 +38,6 @@ export interface ReceiptRecord {
 export interface SessionAuthorizationInput {
   streamId: string;
   viewerWallet: string;
-  maxCharge: string;
   authorizationHash: string;
   issuedAt?: string;
 }
@@ -85,6 +85,12 @@ export class SettlementService {
   private readonly receipts: ReceiptRecord[] = [];
   private readonly payoutClaims: PayoutClaimRecord[] = [];
 
+  constructor(
+    @InjectModel(GatewayReceipt.name)
+    private readonly gatewayReceiptModel?: Model<GatewayReceiptDocument>,
+    private readonly configService?: ConfigService
+  ) {}
+
   validateWalletAddress(address: string, label: string): void {
     if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
       throw new Error(`Invalid ${label} wallet address`);
@@ -94,12 +100,10 @@ export class SettlementService {
   buildAuthorizationMessage({
     streamId,
     viewerWallet,
-    maxCharge,
     issuedAt,
   }: {
     streamId: string;
     viewerWallet: string;
-    maxCharge: string;
     issuedAt?: string;
   }): string {
     const timestamp = issuedAt
@@ -110,7 +114,6 @@ export class SettlementService {
       "Prawr session authorization",
       `Stream: ${streamId}`,
       `Viewer: ${viewerWallet}`,
-      `Max charge: ${maxCharge} USDC`,
       `Issued at: ${timestamp}`,
     ].join("\n");
   }
@@ -118,7 +121,6 @@ export class SettlementService {
   async verifySessionAuthorization({
     streamId,
     viewerWallet,
-    maxCharge,
     authorizationHash,
     issuedAt,
   }: SessionAuthorizationInput): Promise<boolean> {
@@ -128,10 +130,6 @@ export class SettlementService {
 
     this.validateWalletAddress(viewerWallet, "viewer");
 
-    if (!maxCharge || Number(maxCharge) <= 0) {
-      throw new Error("maxCharge must be a positive decimal string");
-    }
-
     if (!authorizationHash?.trim()) {
       throw new Error("authorizationHash is required");
     }
@@ -140,7 +138,6 @@ export class SettlementService {
     const message = this.buildAuthorizationMessage({
       streamId,
       viewerWallet,
-      maxCharge,
       issuedAt: normalizedIssuedAt,
     });
 
@@ -185,25 +182,6 @@ export class SettlementService {
       Number(chargeValue).toFixed(6).replace(/0+$/, "").replace(/\.$/, "") ||
       "0"
     );
-  }
-
-  validateAuthorizationCap({
-    ratePerMinute,
-    secondsWatched,
-    maxCharge,
-  }: ValidateAuthorizationCapInput): string {
-    const charge = this.calculateCharge({ ratePerMinute, secondsWatched });
-    const maxChargeValue = Number(maxCharge);
-
-    if (!Number.isFinite(maxChargeValue) || maxChargeValue <= 0) {
-      throw new Error("maxCharge must be a positive numeric string");
-    }
-
-    if (Number(charge) > maxChargeValue) {
-      throw new Error("Session charge exceeds the authorization cap");
-    }
-
-    return charge;
   }
 
   createReceipt({
@@ -306,21 +284,44 @@ export class SettlementService {
     return { ...this.payoutClaims[claimIndex] };
   }
 
-  getCreatorPayoutSummary(creatorWallet: string): {
+  async getCreatorPayoutSummary(creatorWallet: string): Promise<{
     creatorWallet: string;
     totalReceived: string;
     receiptCount: number;
     receipts: ReceiptRecord[];
     pendingClaims: PayoutClaimRecord[];
-  } {
+  }> {
     this.validateWalletAddress(creatorWallet, "creator");
 
-    const receipts = this.receipts
-      .filter(
-        (receipt) =>
-          receipt.creatorWallet.toLowerCase() === creatorWallet.toLowerCase()
-      )
-      .map((receipt) => ({ ...receipt }));
+    const persistedReceipts = this.gatewayReceiptModel
+      ? await this.gatewayReceiptModel
+          .find({
+            creatorWallet: { $regex: `^${creatorWallet}$`, $options: "i" },
+          })
+          .sort({ createdAt: 1 })
+          .exec()
+      : undefined;
+    const receipts = persistedReceipts
+      ? persistedReceipts.map((receipt) => ({
+          receiptId: receipt.receiptId,
+          sessionId: receipt.sessionId,
+          streamId: receipt.streamId,
+          viewerWallet: receipt.viewerWallet,
+          creatorWallet: receipt.creatorWallet,
+          charge: receipt.amount,
+          transaction: receipt.transaction,
+          network: receipt.network,
+          createdAt: new Date(
+            receipt.get("createdAt") as string | Date
+          ).toISOString(),
+        }))
+      : this.receipts
+          .filter(
+            (receipt) =>
+              receipt.creatorWallet.toLowerCase() ===
+              creatorWallet.toLowerCase()
+          )
+          .map((receipt) => ({ ...receipt }));
 
     const pendingClaims = this.payoutClaims
       .filter(
@@ -378,13 +379,13 @@ export class SettlementService {
   async getGatewayBalances(address: string): Promise<GatewayBalanceResponse> {
     this.validateWalletAddress(address, "creator");
 
-    const apiKey = process.env.GATEWAY_API_KEY;
-    const facilitatorUrl = (
-      process.env.GATEWAY_FACILITATOR_URL ??
-      (process.env.GATEWAY_CHAIN?.includes("5042002")
-        ? "https://gateway-api-testnet.circle.com"
-        : "https://gateway-api.circle.com")
-    ).replace(/\/$/, "");
+    const apiKey = this.configService?.get<string>("GATEWAY_API_KEY");
+    const facilitatorUrl = this.configService
+      ?.get<string>(
+        "GATEWAY_FACILITATOR_URL",
+        "https://gateway-api-testnet.circle.com"
+      )
+      .replace(/\/$/, "");
 
     try {
       // Circle Gateway balances endpoint (same shape the SDK's
@@ -442,17 +443,9 @@ export class SettlementService {
           formattedPending: entry.withdrawable ?? "0",
         },
       };
-    } catch {
-      // Gateway unavailable (e.g. local dev without network access) — return zeros.
-      return {
-        wallet: { balance: "0", formatted: "0" },
-        gateway: {
-          available: "0",
-          formatted: "0",
-          pending: "0",
-          formattedPending: "0",
-        },
-      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to load Gateway balances: ${detail}`);
     }
   }
 

@@ -4,44 +4,16 @@ import { ConnectKitButton } from "connectkit";
 import { useEffect, useMemo, useState } from "react";
 import { listStreams, type StreamRecord } from "./lib/prawr-api";
 
-const fallbackStreams = [
-  {
-    id: "stream_arc_briefing",
-    title: "Arc Market Briefing",
-    creatorId: "creator_1",
-    creatorWallet: "0xCreatorWalletOne",
-    category: "Finance",
-    ratePerMinute: 0.02,
-    status: "live",
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: "stream_creator_studio",
-    title: "Creator Studio Setup",
-    creatorId: "creator_2",
-    creatorWallet: "0xCreatorWalletTwo",
-    category: "Product",
-    ratePerMinute: 0.015,
-    status: "live",
-    createdAt: new Date().toISOString(),
-  },
-] satisfies StreamRecord[];
-
 export default function HomePage() {
-  const [streams, setStreams] = useState<StreamRecord[]>(fallbackStreams);
+  const [streams, setStreams] = useState<StreamRecord[]>([]);
 
   useEffect(() => {
     const loadStreams = async () => {
       try {
         const records = await listStreams();
-        if (records.length > 0) {
-          setStreams(records);
-        }
+        setStreams(records);
       } catch (error) {
-        console.warn(
-          "Using fallback stream list because the API is unavailable.",
-          error
-        );
+        console.warn("Unable to load streams from the backend.", error);
       }
     };
 
@@ -52,17 +24,11 @@ export default function HomePage() {
     () =>
       streams.map((stream) => ({
         ...stream,
-        creator:
-          stream.creatorId === "creator_1" ? "Circle Research" : "Maya Chen",
-        viewers: stream.title.includes("Briefing") ? 826 : 421,
         rate: `$${stream.ratePerMinute
           .toFixed(3)
           .replace(/0+$/, "")
           .replace(/\.$/, "")}/min`,
         status: stream.status.toUpperCase(),
-        thumbnail: stream.title.includes("Briefing")
-          ? "https://images.unsplash.com/photo-1526379095098-d400fd0bf935?auto=format&fit=crop&w=1200&q=80"
-          : "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=80",
       })),
     [streams]
   );
@@ -188,31 +154,48 @@ export default function HomePage() {
             {streamCards.map((stream) => (
               <article key={stream.id} className="card overflow-hidden">
                 <div className="relative">
-                  <img
-                    src={stream.thumbnail}
-                    alt={stream.title}
-                    className="h-52 w-full object-cover"
-                  />
-                  <div className="absolute left-3 top-3 inline-flex rounded-full bg-red-500 px-2 py-1 text-xs font-bold uppercase tracking-wide text-white">
-                    {stream.status}
-                  </div>
+                  <a
+                    href={`/watch/${encodeURIComponent(stream.id)}`}
+                    aria-label={`Watch ${stream.title}`}
+                    className="block"
+                  >
+                    <video
+                      src={stream.playbackUrl}
+                      muted
+                      autoPlay
+                      playsInline
+                      preload="metadata"
+                      aria-hidden="true"
+                      className="h-52 w-full bg-black object-cover"
+                      onTimeUpdate={(e) => {
+                        const video = e.currentTarget;
+
+                        // If the video plays past 60 seconds, reset to 0
+                        if (video.currentTime >= 60) {
+                          video.currentTime = 0;
+                          void video.play(); // Ensure it keeps playing after reset
+                        }
+                      }}
+                    />
+                    <div className="absolute left-3 top-3 inline-flex rounded-full bg-red-500 px-2 py-1 text-xs font-bold uppercase tracking-wide text-white">
+                      {stream.status}
+                    </div>
+                  </a>
                 </div>
                 <div className="p-5">
                   <div className="mb-2 flex items-center justify-between text-xs text-slate-400">
-                    <span>{stream.creator}</span>
+                    <span>{stream.creatorId}</span>
                     <span>{stream.category}</span>
                   </div>
                   <h3 className="mb-3 text-xl font-semibold text-white">
                     {stream.title}
                   </h3>
                   <div className="mb-4 flex items-center justify-between text-sm text-slate-300">
-                    <span>{stream.viewers} watching</span>
+                    <span>{stream.creatorId}</span>
                     <span>{stream.rate}</span>
                   </div>
                   <a
-                    href={`/watch/${encodeURIComponent(
-                      stream.title.toLowerCase().replace(/\s+/g, "-")
-                    )}`}
+                    href={`/watch/${encodeURIComponent(stream.id)}`}
                     className="inline-flex rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-200"
                   >
                     Watch Live
@@ -220,6 +203,11 @@ export default function HomePage() {
                 </div>
               </article>
             ))}
+            {streamCards.length === 0 && (
+              <p className="col-span-full py-10 text-center text-slate-400">
+                No streams are available from the backend yet.
+              </p>
+            )}
           </div>
         </section>
       </div>
