@@ -24,7 +24,11 @@ export class Stream {
   @Prop({ required: true })
   declare playbackUrl: string;
 
-  @Prop({ required: true })
+  @Prop({
+    required: true,
+    min: 0.001,
+    max: 100,
+  })
   declare ratePerMinute: number;
 
   @Prop({

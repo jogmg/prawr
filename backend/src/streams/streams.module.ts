@@ -2,9 +2,16 @@ import { Module } from "@nestjs/common";
 import { MongooseModule } from "@nestjs/mongoose";
 import { StreamsController } from "./streams.controller";
 import { StreamsService } from "./streams.service";
+import { StreamStatusService } from "./stream-status.service";
 import { Stream, StreamSchema } from "./schemas/stream.schema";
-import { WatchSession, WatchSessionSchema } from "./schemas/watch-session.schema";
-import { GatewayReceipt, GatewayReceiptSchema } from "../gateway/gateway-receipt.schema";
+import {
+  WatchSession,
+  WatchSessionSchema,
+} from "./schemas/watch-session.schema";
+import {
+  GatewayReceipt,
+  GatewayReceiptSchema,
+} from "../gateway/gateway-receipt.schema";
 import { GatewayModule } from "../gateway/gateway.module";
 import { SettlementModule } from "../settlement/settlement.module";
 
@@ -19,7 +26,7 @@ import { SettlementModule } from "../settlement/settlement.module";
     SettlementModule,
   ],
   controllers: [StreamsController],
-  providers: [StreamsService],
+  providers: [StreamsService, StreamStatusService],
   exports: [StreamsService],
 })
 export class StreamsModule {}

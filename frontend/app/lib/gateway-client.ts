@@ -197,7 +197,6 @@ export async function payForStream<T = unknown>(
     allowedAssets: required.accepts.map(({ network, asset }) => ({
       network,
       asset,
-      maxAmountPerPayment: "1000000",
     })),
   });
   const payload = await httpClient.createPaymentPayload(required);

@@ -1,213 +1,254 @@
 "use client";
 
 import { ConnectKitButton } from "connectkit";
-import { useEffect, useMemo, useRef, useState } from "react";
+import ReactPlayer from "react-player/lazy";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { formatUnits } from "viem";
 import {
   useAccount,
   useSignMessage,
   useSignTypedData,
   useWalletClient,
 } from "wagmi";
-import {
-  buildSessionAuthorizationMessage,
-  createSession,
-  getPaymentRequirements,
-  getStreamById,
-  heartbeatSession,
-  pauseSession,
-  resumeSession,
-  restoreSession,
-  startSession,
-  type StreamRecord,
-} from "../../lib/prawr-api";
-import {
-  depositToGateway,
-  payForStream,
-  getGatewayBalances,
-  withdrawFromGateway,
-  type GatewayWithdrawalSigner,
-} from "../../lib/gateway-client";
+import { buildSessionAuthorizationMessage } from "../../lib/prawr-api";
+import { type GatewayWithdrawalSigner } from "../../lib/gateway-client";
 import type { BatchEvmSigner } from "@circle-fin/x402-batching";
+import { useStream } from "../../lib/hooks/use-stream-queries";
+import {
+  useRestoredWatchSession,
+  useWatchGatewayBalances,
+  useWatchPaymentRequirements,
+} from "../../lib/hooks/use-watch-queries";
+import {
+  useGatewayDeposit,
+  useGatewayWithdrawal,
+} from "../../lib/hooks/use-gateway-mutations";
+import {
+  usePayForWatchBlock,
+  useWatchSessionMutations,
+} from "../../lib/hooks/use-watch-mutations";
+import { watchPaymentRequirementsQuery } from "../../lib/queries/watch-queries";
+import {
+  readWatchSession,
+  removeWatchSession,
+  saveWatchSession,
+  useWatchSessionStore,
+  type StoredWatchSession,
+} from "../../store/watch/watch-session.store";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+const MAX_VIEWING_SECONDS = 24 * 60 * 60;
+const DURATION_UNITS = {
+  seconds: 1,
+  minutes: 60,
+  hours: 60 * 60,
+} as const;
+type DurationUnit = keyof typeof DURATION_UNITS;
 
 export default function WatchPage({ params }: { params: { slug: string } }) {
+  const queryClient = useQueryClient();
   const { address } = useAccount();
   const { data: walletClient } = useWalletClient();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
   const { signTypedDataAsync } = useSignTypedData();
 
-  const [secondsWatched, setSecondsWatched] = useState(0);
-  const [prepaidSeconds, setPrepaidSeconds] = useState(0);
-  const [amountCharged, setAmountCharged] = useState(0);
-  const [payingBlock, setPayingBlock] = useState(false);
-  const [blockQuote, setBlockQuote] = useState<{
-    seconds: number;
-    amount: string;
-  } | null>(null);
-  const [sessionState, setSessionState] = useState<
-    "idle" | "pending" | "authorized" | "playing" | "capped"
-  >("idle");
-  const [resumeAvailable, setResumeAvailable] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [gatewayBalance, setGatewayBalance] = useState<string | null>(null);
-  const [walletUsdcBalance, setWalletUsdcBalance] = useState<string | null>(
+  const secondsWatched = useWatchSessionStore((state) => state.secondsWatched);
+  const setSecondsWatched = useWatchSessionStore(
+    (state) => state.setSecondsWatched
+  );
+  const prepaidSeconds = useWatchSessionStore((state) => state.prepaidSeconds);
+  const setPrepaidSeconds = useWatchSessionStore(
+    (state) => state.setPrepaidSeconds
+  );
+  const amountCharged = useWatchSessionStore((state) => state.amountCharged);
+  const setAmountCharged = useWatchSessionStore(
+    (state) => state.setAmountCharged
+  );
+  const sessionState = useWatchSessionStore((state) => state.sessionState);
+  const setSessionState = useWatchSessionStore(
+    (state) => state.setSessionState
+  );
+  const resumeAvailable = useWatchSessionStore(
+    (state) => state.resumeAvailable
+  );
+  const setResumeAvailable = useWatchSessionStore(
+    (state) => state.setResumeAvailable
+  );
+  const streamQuery = useStream(decodeURIComponent(params.slug));
+  const stream = streamQuery.data ?? null;
+  const balancesQuery = useWatchGatewayBalances(address);
+  const sessionMutations = useWatchSessionMutations();
+  const paidBlockMutation = usePayForWatchBlock();
+  const gatewayDeposit = useGatewayDeposit();
+  const gatewayWithdrawal = useGatewayWithdrawal();
+  const [savedSession, setSavedSession] = useState<StoredWatchSession | null>(
     null
   );
+  const [paymentSessionId, setPaymentSessionId] = useState<string>();
+  const restoreQuery = useRestoredWatchSession(
+    savedSession?.sessionId,
+    savedSession?.accessToken
+  );
+  const paymentRequirementsQuery =
+    useWatchPaymentRequirements(paymentSessionId);
+  const blockQuote = paymentRequirementsQuery.data
+    ? {
+        seconds: paymentRequirementsQuery.data.nextBlockSeconds,
+        amount: paymentRequirementsQuery.data.nextBlockAmount,
+      }
+    : null;
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [durationUnit, setDurationUnit] = useState<DurationUnit>("seconds");
+  const [durationCount, setDurationCount] = useState(30);
+  const [error, setError] = useState<string | null>(null);
+  const gatewayBalance = balancesQuery.data?.gateway.formattedAvailable ?? null;
+  const walletUsdcBalance = balancesQuery.data?.wallet.formatted ?? null;
   const [depositAmount, setDepositAmount] = useState("5");
-  const [depositing, setDepositing] = useState(false);
-  const [withdrawing, setWithdrawing] = useState(false);
-  const [stream, setStream] = useState<StreamRecord | null>(null);
-  const [streamError, setStreamError] = useState<string | null>(null);
+  const [playbackSeconds, setPlaybackSeconds] = useState(0);
 
   // Session refs - avoids stale closures inside the pay interval.
   const sessionIdRef = useRef<string | null>(null);
   const accessTokenRef = useRef<string | null>(null);
   const watchIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const paymentInFlightRef = useRef(false);
+  const playbackStartPendingRef = useRef(false);
   const prepaidSecondsRef = useRef(0);
   const serverSessionStatusRef = useRef<"playing" | "paused">("playing");
   const pauseRequestRef = useRef<Promise<void> | null>(null);
   const restoreTimeRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playerRef = useRef<ReactPlayer | null>(null);
   const sessionStorageKey =
     address && stream
       ? `prawr:watch-session:${stream.id}:${address.toLowerCase()}`
       : null;
+  const streamNotLive = stream?.status !== "live";
+  const streamError =
+    streamQuery.error instanceof Error
+      ? streamQuery.error.message
+      : "Unable to load stream.";
 
   const applyPendingPlaybackTime = () => {
-    const video = videoRef.current;
+    const player = playerRef.current;
     const playbackTime = restoreTimeRef.current;
-    if (!video || playbackTime === null || video.readyState < 1) return;
+    if (!player || playbackTime === null) return;
+    const duration = player.getDuration();
+    if (!Number.isFinite(duration) || duration <= 0) return;
 
-    video.currentTime = Math.min(
-      playbackTime,
-      Number.isFinite(video.duration) ? video.duration : playbackTime
-    );
-    lastVideoTimeRef.current = video.currentTime;
+    const targetTime = Math.min(playbackTime, duration);
+    player.seekTo(targetTime, "seconds");
+    lastVideoTimeRef.current = targetTime;
+    setPlaybackSeconds(targetTime);
     restoreTimeRef.current = null;
   };
 
-  useEffect(() => {
-    let mounted = true;
-    getStreamById(decodeURIComponent(params.slug))
-      .then((record) => {
-        if (mounted) setStream(record);
-      })
-      .catch((loadError) => {
-        if (mounted) {
-          setStreamError(
-            loadError instanceof Error
-              ? loadError.message
-              : "Unable to load stream."
-          );
-        }
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [params.slug]);
+  const controlPlayback = async (action: "play" | "pause") => {
+    const player = playerRef.current?.getInternalPlayer();
+    if (!player) return;
+    if (action === "pause") {
+      if (typeof player.pauseVideo === "function") player.pauseVideo();
+      else if (typeof player.pause === "function") player.pause();
+      return;
+    }
+    if (typeof player.playVideo === "function") player.playVideo();
+    else if (typeof player.play === "function") await player.play();
+  };
+
+  const refreshBlockQuote = useCallback(
+    async (sessionId: string) => {
+      setPaymentSessionId(sessionId);
+      await queryClient.fetchQuery(watchPaymentRequirementsQuery(sessionId));
+    },
+    [queryClient]
+  );
 
   useEffect(() => {
-    if (!sessionStorageKey || !address || !stream) return;
+    if (!stream) return;
+    useWatchSessionStore
+      .getState()
+      .setStreamId(`${stream.id}:${address?.toLowerCase() ?? "disconnected"}`);
+  }, [address, stream]);
 
-    let active = true;
-    const savedValue = sessionStorage.getItem(sessionStorageKey);
-    if (!savedValue) return;
+  useEffect(() => {
+    if (!sessionStorageKey || !stream) {
+      setSavedSession(null);
+      return;
+    }
+    const saved = readWatchSession(sessionStorageKey, stream.id);
+    if (!saved && typeof window !== "undefined") {
+      removeWatchSession(sessionStorageKey);
+    }
+    setSavedSession(saved);
+  }, [sessionStorageKey, stream]);
 
-    try {
-      const saved = JSON.parse(savedValue) as {
-        sessionId: string;
-        accessToken: string;
-        playbackTime: number;
-      };
-      if (!saved.sessionId || !saved.accessToken) {
-        sessionStorage.removeItem(sessionStorageKey);
-        return;
-      }
-
-      void restoreSession(saved.sessionId, saved.accessToken)
-        .then(async (session) => {
-          if (!active) return;
-          if (
-            session.streamId !== stream.id ||
-            session.viewerWallet.toLowerCase() !== address.toLowerCase()
-          ) {
-            sessionStorage.removeItem(sessionStorageKey);
-            return;
-          }
-
-          sessionIdRef.current = session.sessionId;
-          accessTokenRef.current = saved.accessToken;
-          serverSessionStatusRef.current = "paused";
-          setSecondsWatched(session.secondsWatched);
-          setPrepaidSeconds(session.prepaidSeconds);
-          prepaidSecondsRef.current = session.prepaidSeconds;
-          setAmountCharged(Number(session.charge));
-          restoreTimeRef.current = Number.isFinite(saved.playbackTime)
-            ? saved.playbackTime
-            : 0;
-          applyPendingPlaybackTime();
-
-          if (session.status === "completed" || session.status === "capped") {
-            sessionStorage.removeItem(sessionStorageKey);
-            setSessionState("capped");
-            return;
-          }
-
-          setSessionState("authorized");
-          setResumeAvailable(session.prepaidSeconds > 0);
-          await refreshBlockQuote(session.sessionId);
-        })
-        .catch((restoreError) => {
-          console.error("Session restore failed", restoreError);
-          if (active) {
-            setError(
-              "Unable to restore the saved session. Try again or authorize a new session."
-            );
-          }
-        });
-    } catch (restoreError) {
-      console.error("Saved session data is invalid", restoreError);
-      sessionStorage.removeItem(sessionStorageKey);
+  useEffect(() => {
+    const session = restoreQuery.data;
+    if (!session || !savedSession || !stream || !address) return;
+    if (
+      session.streamId !== stream.id ||
+      session.viewerWallet.toLowerCase() !== address.toLowerCase()
+    ) {
+      if (sessionStorageKey) removeWatchSession(sessionStorageKey);
+      setSavedSession(null);
+      return;
     }
 
-    return () => {
-      active = false;
-    };
-  }, [address, sessionStorageKey, stream]);
+    sessionIdRef.current = session.sessionId;
+    accessTokenRef.current = savedSession.accessToken;
+    serverSessionStatusRef.current = "paused";
+    setSecondsWatched(session.secondsWatched);
+    setPrepaidSeconds(session.prepaidSeconds);
+    prepaidSecondsRef.current = session.prepaidSeconds;
+    setAmountCharged(Number(session.charge));
+    restoreTimeRef.current = savedSession.playbackTime;
+    applyPendingPlaybackTime();
+
+    if (session.status === "completed" || session.status === "capped") {
+      if (sessionStorageKey) removeWatchSession(sessionStorageKey);
+      setSessionState("capped");
+      return;
+    }
+
+    setSessionState("authorized");
+    setResumeAvailable(session.prepaidSeconds > 0);
+    void refreshBlockQuote(session.sessionId);
+  }, [
+    restoreQuery.data,
+    savedSession,
+    stream,
+    address,
+    sessionStorageKey,
+    setAmountCharged,
+    setPrepaidSeconds,
+    setResumeAvailable,
+    setSecondsWatched,
+    setSessionState,
+    refreshBlockQuote,
+  ]);
+
+  useEffect(() => {
+    if (restoreQuery.isError && savedSession) {
+      setError(
+        "Unable to restore the saved session. Try again or authorize a new session."
+      );
+    }
+  }, [restoreQuery.isError, savedSession]);
 
   const currentCost = useMemo(() => {
     return amountCharged.toFixed(6);
   }, [amountCharged]);
-
-  const refreshGatewayBalance = async () => {
-    if (!address) return;
-    try {
-      const balances = await getGatewayBalances(address);
-      setGatewayBalance(balances.gateway.formattedAvailable);
-      setWalletUsdcBalance(balances.wallet.formatted);
-    } catch {
-      // Gateway API unreachable - leave balance unknown rather than showing 0.
-      setGatewayBalance(null);
-      setWalletUsdcBalance(null);
-    }
-  };
-
-  const refreshBlockQuote = async (sessionId: string) => {
-    const quote = await getPaymentRequirements(sessionId);
-    setBlockQuote({
-      seconds: quote.nextBlockSeconds,
-      amount: quote.nextBlockAmount,
-    });
-  };
-
-  useEffect(() => {
-    void refreshGatewayBalance();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address]);
+  const durationSeconds = durationCount * DURATION_UNITS[durationUnit];
+  const durationValid =
+    Number.isInteger(durationCount) &&
+    durationCount > 0 &&
+    durationSeconds <= MAX_VIEWING_SECONDS;
+  const durationAmount = useMemo(() => {
+    if (!stream || !durationValid) return "0.000000";
+    const perSecondAtomic = BigInt(
+      Math.max(1, Math.round((stream.ratePerMinute / 60) * 1_000_000))
+    );
+    return formatUnits(perSecondAtomic * BigInt(durationSeconds), 6);
+  }, [durationSeconds, durationValid, stream]);
 
   // Cleanup the pay interval on unmount.
   useEffect(() => {
@@ -218,23 +259,18 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
 
   const handleDeposit = async () => {
     if (!address) return;
-    setDepositing(true);
     setError(null);
     try {
       if (!walletClient) throw new Error("Connect a wallet to deposit.");
-      await depositToGateway(depositAmount, walletClient);
-      await refreshGatewayBalance();
+      await gatewayDeposit.mutateAsync({ amount: depositAmount, walletClient });
     } catch (err) {
       console.error("Deposit failed", err);
       setError("Deposit failed. Make sure your wallet has testnet USDC.");
-    } finally {
-      setDepositing(false);
     }
   };
 
   const handleWithdraw = async () => {
     if (!address || !walletClient || !gatewayBalance) return;
-    setWithdrawing(true);
     setError(null);
     try {
       const gatewaySigner: GatewayWithdrawalSigner = {
@@ -247,20 +283,17 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
             message: params.message,
           } as never),
       };
-      await withdrawFromGateway(
-        depositAmount,
-        address,
+      await gatewayWithdrawal.mutateAsync({
+        amount: depositAmount,
+        recipient: address,
         walletClient,
-        gatewaySigner
-      );
-      await refreshGatewayBalance();
+        signer: gatewaySigner,
+      });
     } catch (err) {
       console.error("Withdrawal failed", err);
       setError(
         err instanceof Error ? err.message : "Gateway withdrawal failed."
       );
-    } finally {
-      setWithdrawing(false);
     }
   };
 
@@ -272,7 +305,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
       !address ||
       prepaidSecondsRef.current <= 0
     ) {
-      videoRef.current?.pause();
+      void controlPlayback("pause");
       setError(
         prepaidSecondsRef.current <= 0
           ? "Pay for a viewing block before playing."
@@ -283,112 +316,112 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
 
   const handleVideoPlaying = async () => {
     const sessionId = sessionIdRef.current;
-    if (!sessionId || !accessTokenRef.current || !address) return;
-    if (watchIntervalRef.current) return;
-
-    await pauseRequestRef.current;
-
-    if (serverSessionStatusRef.current === "paused") {
-      try {
-        await resumeSession(sessionId, accessTokenRef.current);
-        serverSessionStatusRef.current = "playing";
-      } catch (resumeError) {
-        videoRef.current?.pause();
-        setError(
-          resumeError instanceof Error
-            ? resumeError.message
-            : "Unable to resume the watch session."
-        );
-        return;
-      }
+    if (
+      !sessionId ||
+      !accessTokenRef.current ||
+      !address ||
+      prepaidSecondsRef.current <= 0
+    ) {
+      return;
     }
+    if (watchIntervalRef.current || playbackStartPendingRef.current) return;
 
-    setError(null);
-    setResumeAvailable(false);
-    setSessionState("playing");
-    watchIntervalRef.current = setInterval(async () => {
-      if (paymentInFlightRef.current) return;
-      paymentInFlightRef.current = true;
-      try {
-        const accessToken = accessTokenRef.current;
-        if (!accessToken)
-          throw new Error("Watch session authorization expired.");
-        const session = await heartbeatSession(sessionId, accessToken);
-        serverSessionStatusRef.current =
-          session.status === "paused" ? "paused" : "playing";
-        setSecondsWatched(session.secondsWatched);
-        prepaidSecondsRef.current = session.prepaidSeconds;
-        setPrepaidSeconds(session.prepaidSeconds);
-        if (session.prepaidSeconds <= 0) {
+    playbackStartPendingRef.current = true;
+    try {
+      await pauseRequestRef.current;
+
+      if (serverSessionStatusRef.current === "paused") {
+        try {
+          await sessionMutations.resume.mutateAsync({
+            sessionId,
+            accessToken: accessTokenRef.current,
+          });
+          serverSessionStatusRef.current = "playing";
+        } catch (resumeError) {
+          void controlPlayback("pause");
+          setError(
+            resumeError instanceof Error
+              ? resumeError.message
+              : "Unable to resume the watch session."
+          );
+          return;
+        }
+      }
+
+      setError(null);
+      setResumeAvailable(false);
+      setSessionState("playing");
+      watchIntervalRef.current = setInterval(async () => {
+        if (paymentInFlightRef.current) return;
+        paymentInFlightRef.current = true;
+        try {
+          const accessToken = accessTokenRef.current;
+          if (!accessToken)
+            throw new Error("Watch session authorization expired.");
+          const session = await sessionMutations.heartbeat.mutateAsync({
+            sessionId,
+            accessToken,
+          });
+          serverSessionStatusRef.current =
+            session.status === "paused" ? "paused" : "playing";
+          setSecondsWatched(session.secondsWatched);
+          prepaidSecondsRef.current = session.prepaidSeconds;
+          setPrepaidSeconds(session.prepaidSeconds);
+          if (session.prepaidSeconds <= 0) {
+            if (watchIntervalRef.current)
+              clearInterval(watchIntervalRef.current);
+            watchIntervalRef.current = null;
+            setSessionState("authorized");
+            void controlPlayback("pause");
+            setError(
+              "Viewing block finished. Pay for the next block to continue."
+            );
+          }
+        } catch (heartbeatError) {
+          console.error("Watch heartbeat failed", heartbeatError);
           if (watchIntervalRef.current) clearInterval(watchIntervalRef.current);
           watchIntervalRef.current = null;
-          setSessionState("authorized");
-          videoRef.current?.pause();
           setError(
-            "Viewing block finished. Pay for the next block to continue."
+            heartbeatError instanceof Error
+              ? heartbeatError.message
+              : "Unable to confirm prepaid viewing time. Playback has been paused."
           );
+          void controlPlayback("pause");
+          setSessionState("authorized");
+        } finally {
+          paymentInFlightRef.current = false;
         }
-      } catch (heartbeatError) {
-        console.error("Watch heartbeat failed", heartbeatError);
-        if (watchIntervalRef.current) clearInterval(watchIntervalRef.current);
-        watchIntervalRef.current = null;
-        setError(
-          heartbeatError instanceof Error
-            ? heartbeatError.message
-            : "Unable to confirm prepaid viewing time. Playback has been paused."
-        );
-        videoRef.current?.pause();
-        setSessionState("authorized");
-      } finally {
-        paymentInFlightRef.current = false;
-      }
-    }, 1000);
+      }, 1000);
+    } finally {
+      playbackStartPendingRef.current = false;
+    }
   };
 
-  const handleVideoTimeUpdate = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    lastVideoTimeRef.current = video.currentTime;
-    video.playbackRate = 1;
+  const handlePlayerProgress = ({
+    playedSeconds,
+  }: {
+    playedSeconds: number;
+  }) => {
+    lastVideoTimeRef.current = playedSeconds;
+    setPlaybackSeconds(playedSeconds);
     if (!sessionStorageKey || !sessionIdRef.current || !accessTokenRef.current)
       return;
 
-    sessionStorage.setItem(
-      sessionStorageKey,
-      JSON.stringify({
-        sessionId: sessionIdRef.current,
-        accessToken: accessTokenRef.current,
-        playbackTime: video.currentTime,
-      })
-    );
+    saveWatchSession(sessionStorageKey, {
+      sessionId: sessionIdRef.current,
+      accessToken: accessTokenRef.current,
+      playbackTime: playedSeconds,
+    });
   };
 
-  const handleVideoMetadata = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.playbackRate = 1;
+  const handlePlayerReady = () => {
     applyPendingPlaybackTime();
   };
 
-  const handleVideoSeeking = () => {
-    const video = videoRef.current;
-    const lastAllowedTime = lastVideoTimeRef.current;
-    if (!video || lastAllowedTime === null) return;
-    if (Math.abs(video.currentTime - lastAllowedTime) > 0.25) {
-      video.currentTime = lastAllowedTime;
-    }
-  };
-
-  const handleVideoRateChange = () => {
-    const video = videoRef.current;
-    if (video && video.playbackRate !== 1) video.playbackRate = 1;
-  };
-
   const handleTogglePlayback = async () => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (!video.paused) {
-      video.pause();
+    if (!playerRef.current) return;
+    if (sessionState === "playing") {
+      await controlPlayback("pause");
       return;
     }
     if (prepaidSecondsRef.current <= 0) {
@@ -396,11 +429,14 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
       return;
     }
     try {
-      if (video.ended) {
+      const player = playerRef.current;
+      const duration = player.getDuration();
+      if (Number.isFinite(duration) && playbackSeconds >= duration) {
         lastVideoTimeRef.current = 0;
-        video.currentTime = 0;
+        setPlaybackSeconds(0);
+        player.seekTo(0, "seconds");
       }
-      await video.play();
+      await controlPlayback("play");
     } catch (playError) {
       setError(
         playError instanceof Error
@@ -426,7 +462,8 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
         accessToken &&
         serverSessionStatusRef.current === "playing"
       ) {
-        pauseRequestRef.current = pauseSession(sessionId, accessToken)
+        pauseRequestRef.current = sessionMutations.pause
+          .mutateAsync({ sessionId, accessToken })
           .then((session) => {
             serverSessionStatusRef.current = "paused";
             setPrepaidSeconds(session.prepaidSeconds);
@@ -443,18 +480,13 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
     }
   };
 
-  const handlePayNextBlock = async () => {
+  const handlePayNextBlock = async (blockSeconds: number) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId || !address || prepaidSecondsRef.current > 0) return;
 
-    setPayingBlock(true);
     setError(null);
     try {
-      const quote = await getPaymentRequirements(sessionId);
-      setBlockQuote({
-        seconds: quote.nextBlockSeconds,
-        amount: quote.nextBlockAmount,
-      });
+      await refreshBlockQuote(sessionId);
       const gatewaySigner: BatchEvmSigner = {
         address,
         signTypedData: (params) =>
@@ -465,28 +497,21 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
             message: params.message,
           } as never),
       };
-      const result = await payForStream<{
-        status: string;
-        prepaidSeconds: number;
-        secondsWatched: number;
-        charge: string;
-      }>(
-        `${API_BASE_URL}/streams/sessions/${sessionId}/watch`,
-        {
-          method: "POST",
-          body: { blockSeconds: quote.nextBlockSeconds },
-        },
-        gatewaySigner
-      );
+      const result = await paidBlockMutation.mutateAsync({
+        sessionId,
+        blockSeconds,
+        signer: gatewaySigner,
+      });
       prepaidSecondsRef.current = result.data.prepaidSeconds;
       serverSessionStatusRef.current = "paused";
       setPrepaidSeconds(result.data.prepaidSeconds);
       setSecondsWatched(result.data.secondsWatched);
       setAmountCharged(Number(result.data.charge));
       setResumeAvailable(result.data.prepaidSeconds > 0);
+      setShowPayModal(false);
       setError(null);
       try {
-        await videoRef.current?.play();
+        await controlPlayback("play");
       } catch (playError) {
         setError(
           playError instanceof Error
@@ -495,7 +520,9 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
         );
       }
       await refreshBlockQuote(sessionId);
-      await refreshGatewayBalance();
+      await queryClient.invalidateQueries({
+        queryKey: ["creator", "balances"],
+      });
     } catch (paymentError) {
       console.error("Viewing block payment failed", paymentError);
       setError(
@@ -503,20 +530,18 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
           ? paymentError.message
           : "Block payment failed."
       );
-    } finally {
-      setPayingBlock(false);
     }
   };
 
   const handleVideoError = () => {
     handleVideoPause();
     setError(
-      "The video could not be loaded. Check that the URL is public and serves a browser-compatible MP4 or WebM file."
+      "Playback could not be loaded. Check the URL, stream availability, embed permissions, and HLS CORS settings."
     );
   };
 
   const handleAuthorizeSession = async () => {
-    if (!address || !stream) return;
+    if (!address || !stream || streamNotLive) return;
 
     setSessionState("pending");
     setError(null);
@@ -535,26 +560,29 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
 
       // 2. Backend validates the signature and creates the session,
       //    returning the one-time accessToken for session control.
-      const session = await createSession({
+      const session = await sessionMutations.create.mutateAsync({
         streamId: stream.id,
         viewerWallet: address,
         authorizationHash,
         issuedAt,
       });
+      const accessToken = session.accessToken;
+      if (!accessToken)
+        throw new Error("Session authorization token was not returned.");
       sessionIdRef.current = session.sessionId;
-      accessTokenRef.current = session.accessToken ?? null;
+      accessTokenRef.current = accessToken;
 
       // 3. Start the session server-side.
-      await startSession(session.sessionId, session.accessToken ?? "");
+      await sessionMutations.start.mutateAsync({
+        sessionId: session.sessionId,
+        accessToken,
+      });
       if (sessionStorageKey) {
-        sessionStorage.setItem(
-          sessionStorageKey,
-          JSON.stringify({
-            sessionId: session.sessionId,
-            accessToken: session.accessToken,
-            playbackTime: 0,
-          })
-        );
+        saveWatchSession(sessionStorageKey, {
+          sessionId: session.sessionId,
+          accessToken,
+          playbackTime: 0,
+        });
       }
       serverSessionStatusRef.current = "paused";
       setSessionState("authorized");
@@ -603,8 +631,18 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
               {stream.title}
             </h1>
           </div>
-          <div className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-sm text-emerald-300">
-            {sessionState === "playing" ? "Payment active" : "Not watching"}
+          <div
+            className={`rounded-full border px-3 py-1 text-sm ${
+              streamNotLive
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+            }`}
+          >
+            {streamNotLive
+              ? `Stream ${stream.status} · prepaid time only`
+              : sessionState === "playing"
+              ? "Payment active"
+              : "Not watching"}
           </div>
         </div>
 
@@ -618,24 +656,40 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
           <div className="card overflow-hidden">
             {stream.playbackUrl ? (
               <>
-                <video
-                  ref={videoRef}
-                  src={stream.playbackUrl}
-                  playsInline
-                  preload="metadata"
-                  onLoadedMetadata={handleVideoMetadata}
-                  onSeeking={handleVideoSeeking}
-                  onRateChange={handleVideoRateChange}
-                  onTimeUpdate={handleVideoTimeUpdate}
-                  onPlay={handleVideoStart}
-                  onPlaying={handleVideoPlaying}
+                <ReactPlayer
+                  ref={playerRef}
+                  url={stream.playbackUrl}
+                  width="100%"
+                  height="auto"
+                  controls={false}
+                  playsinline
+                  playbackRate={1}
+                  progressInterval={1000}
+                  onReady={handlePlayerReady}
+                  onPlay={() => {
+                    handleVideoStart();
+                    void handleVideoPlaying();
+                  }}
+                  onBuffer={handleVideoPause}
+                  onBufferEnd={() => void handleVideoPlaying()}
                   onPause={handleVideoPause}
-                  onWaiting={handleVideoPause}
+                  onProgress={handlePlayerProgress}
                   onError={handleVideoError}
+                  config={{
+                    file: { hlsVersion: "1.5.17" },
+                    twitch: {
+                      options: {
+                        controls: false,
+                        parent:
+                          typeof window === "undefined"
+                            ? ["localhost"]
+                            : [window.location.hostname],
+                      },
+                    },
+                    youtube: { playerVars: { controls: 0, disablekb: 1 } },
+                  }}
                   className="aspect-video w-full bg-black"
-                >
-                  Your browser does not support HTML video playback.
-                </video>
+                />
                 <div className="flex items-center justify-between gap-4 border-t border-slate-700 bg-slate-950 px-4 py-3">
                   <button
                     type="button"
@@ -657,10 +711,8 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                       : "Pay to play"}
                   </button>
                   <span className="text-sm tabular-nums text-slate-300">
-                    {Math.floor((videoRef.current?.currentTime ?? 0) / 60)}:
-                    {String(
-                      Math.floor(videoRef.current?.currentTime ?? 0) % 60
-                    ).padStart(2, "0")}
+                    {Math.floor(playbackSeconds / 60)}:
+                    {String(Math.floor(playbackSeconds) % 60).padStart(2, "0")}
                   </span>
                 </div>
               </>
@@ -729,7 +781,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                 <div className="rounded-2xl bg-slate-900 p-3">
                   <div className="text-slate-400">Rate</div>
                   <div className="mt-2 text-xl font-semibold text-white">
-                    ${stream.ratePerMinute.toFixed(2)}/min
+                    ${stream.ratePerMinute.toFixed(3)}/min
                   </div>
                 </div>
               </div>
@@ -776,17 +828,21 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                     <button
                       type="button"
                       onClick={handleDeposit}
-                      disabled={depositing || withdrawing || !walletClient}
+                      disabled={
+                        gatewayDeposit.isPending ||
+                        gatewayWithdrawal.isPending ||
+                        !walletClient
+                      }
                       className="rounded-lg bg-brand-500 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {depositing ? "Depositing..." : "Deposit"}
+                      {gatewayDeposit.isPending ? "Depositing..." : "Deposit"}
                     </button>
                     <button
                       type="button"
                       onClick={handleWithdraw}
                       disabled={
-                        withdrawing ||
-                        depositing ||
+                        gatewayWithdrawal.isPending ||
+                        gatewayDeposit.isPending ||
                         !walletClient ||
                         !gatewayBalance ||
                         Number(depositAmount) <= 0 ||
@@ -794,7 +850,9 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                       }
                       className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {withdrawing ? "Withdrawing..." : "Withdraw"}
+                      {gatewayWithdrawal.isPending
+                        ? "Withdrawing..."
+                        : "Withdraw"}
                     </button>
                   </div>
                 )}
@@ -803,38 +861,56 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                 <ConnectKitButton />
               </div>
 
-              {(sessionState === "idle" || sessionState === "capped") && (
-                <button
-                  type="button"
-                  onClick={handleAuthorizeSession}
-                  disabled={isSigning || !address}
-                  className="w-full rounded-full bg-brand-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isSigning
-                    ? "Authorizing..."
-                    : address
-                    ? sessionState === "capped"
-                      ? "Authorize new session"
-                      : "Authorize session"
-                    : "Connect wallet to authorize"}
-                </button>
+              {!streamNotLive &&
+                (sessionState === "idle" || sessionState === "capped") && (
+                  <button
+                    type="button"
+                    onClick={handleAuthorizeSession}
+                    disabled={isSigning || !address}
+                    className="w-full rounded-full bg-brand-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isSigning
+                      ? "Authorizing..."
+                      : address
+                      ? sessionState === "capped"
+                        ? "Authorize new session"
+                        : "Authorize session"
+                      : "Connect wallet to authorize"}
+                  </button>
+                )}
+
+              {!streamNotLive &&
+                sessionState === "authorized" &&
+                prepaidSeconds === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError(null);
+                      setShowPayModal(true);
+                    }}
+                    disabled={
+                      paidBlockMutation.isPending ||
+                      !address ||
+                      !blockQuote ||
+                      blockQuote.seconds === 0
+                    }
+                    className="w-full rounded-full bg-brand-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Choose viewing duration
+                  </button>
+                )}
+
+              {streamNotLive && prepaidSeconds === 0 && (
+                <div className="text-center text-sm text-amber-200">
+                  This stream is not live. No new viewing time can be purchased.
+                </div>
               )}
 
-              {sessionState === "authorized" && prepaidSeconds === 0 && (
-                <button
-                  type="button"
-                  onClick={handlePayNextBlock}
-                  disabled={
-                    payingBlock || !address || blockQuote?.seconds === 0
-                  }
-                  className="w-full rounded-full bg-brand-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {payingBlock
-                    ? "Waiting for payment signature..."
-                    : blockQuote && blockQuote.seconds > 0
-                    ? `Pay $${blockQuote.amount} for ${blockQuote.seconds}s`
-                    : "Unable to quote the next block"}
-                </button>
+              {streamNotLive && prepaidSeconds > 0 && (
+                <div className="text-center text-sm text-amber-200">
+                  Use your remaining prepaid time. Additional time is
+                  unavailable.
+                </div>
               )}
 
               {sessionState === "pending" && (
@@ -867,6 +943,114 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
           </aside>
         </div>
       </div>
+      {showPayModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-8">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-modal-title"
+            className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-950 p-6 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2
+                  id="payment-modal-title"
+                  className="text-xl font-semibold text-white"
+                >
+                  Choose viewing duration
+                </h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  ${stream.ratePerMinute.toFixed(2)} per minute
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPayModal(false)}
+                disabled={paidBlockMutation.isPending}
+                aria-label="Close payment dialog"
+                className="rounded-md px-2 py-1 text-xl leading-none text-slate-400 hover:text-white disabled:opacity-50"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="mt-6 grid grid-cols-[1fr_1fr] gap-3">
+              <label className="text-sm text-slate-300">
+                Number
+                <input
+                  type="number"
+                  min="1"
+                  max={Math.floor(
+                    MAX_VIEWING_SECONDS / DURATION_UNITS[durationUnit]
+                  )}
+                  step="1"
+                  value={durationCount}
+                  onChange={(event) =>
+                    setDurationCount(Number(event.target.value))
+                  }
+                  disabled={paidBlockMutation.isPending}
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-lg text-white"
+                />
+              </label>
+              <label className="text-sm text-slate-300">
+                Unit
+                <select
+                  value={durationUnit}
+                  onChange={(event) => {
+                    const nextUnit = event.target.value as DurationUnit;
+                    const nextSeconds = Math.ceil(
+                      durationSeconds / DURATION_UNITS[nextUnit]
+                    );
+                    const maxCount = Math.floor(
+                      MAX_VIEWING_SECONDS / DURATION_UNITS[nextUnit]
+                    );
+                    setDurationUnit(nextUnit);
+                    setDurationCount(
+                      Math.min(maxCount, Math.max(1, nextSeconds))
+                    );
+                  }}
+                  disabled={paidBlockMutation.isPending}
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-lg text-white"
+                >
+                  <option value="seconds">Seconds</option>
+                  <option value="minutes">Minutes</option>
+                  <option value="hours">Hours</option>
+                </select>
+              </label>
+            </div>
+            <div className="mt-6 rounded-lg border border-slate-700 bg-slate-900 p-4">
+              <div className="text-sm text-slate-400">Amount due</div>
+              <div className="mt-1 text-3xl font-semibold tabular-nums text-white">
+                ${durationAmount}{" "}
+                <span className="text-base font-normal text-slate-400">
+                  USDC
+                </span>
+              </div>
+              <div className="mt-2 text-sm text-slate-400">
+                {durationValid
+                  ? `${durationSeconds} seconds of prepaid viewing`
+                  : "Choose a duration up to 24 hours"}
+              </div>
+            </div>
+            {error && (
+              <p role="alert" className="mt-4 text-sm text-red-300">
+                {error}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => void handlePayNextBlock(durationSeconds)}
+              disabled={
+                !durationValid || paidBlockMutation.isPending || !address
+              }
+              className="mt-6 w-full rounded-lg bg-brand-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {paidBlockMutation.isPending
+                ? "Waiting for payment signature..."
+                : `Pay $${durationAmount} USDC`}
+            </button>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

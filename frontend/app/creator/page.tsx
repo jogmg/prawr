@@ -1,20 +1,16 @@
 "use client";
 
 import { ConnectKitButton } from "connectkit";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useAccount, useSignTypedData, useWalletClient } from "wagmi";
+import type { CreatorPayoutSummary } from "../lib/prawr-api";
 import {
-  createStream,
-  getCreatorPayoutSummary,
-  listStreams,
-  type CreatorPayoutSummary,
-  type StreamRecord,
-} from "../lib/prawr-api";
-import {
-  getGatewayBalances,
-  withdrawFromGateway,
-  type GatewayWithdrawalSigner,
-} from "../lib/gateway-client";
+  useCreatorSummary,
+  useWalletGatewayBalances,
+} from "../lib/hooks/use-creator-queries";
+import { useCreateStream, useStreams } from "../lib/hooks/use-stream-queries";
+import type { GatewayWithdrawalSigner } from "../lib/gateway-client";
+import { useGatewayWithdrawal } from "../lib/hooks/use-gateway-mutations";
 
 const fallbackSummary: CreatorPayoutSummary = {
   creatorWallet: "",
@@ -23,23 +19,32 @@ const fallbackSummary: CreatorPayoutSummary = {
   receipts: [],
   pendingClaims: [],
 };
+const MIN_STREAM_RATE_PER_MINUTE = 0.001;
+const MAX_STREAM_RATE_PER_MINUTE = 100;
 
 export default function CreatorDashboardPage() {
   const { address } = useAccount();
   const { data: walletClient } = useWalletClient();
   const { signTypedDataAsync } = useSignTypedData();
-  const [summary, setSummary] = useState<CreatorPayoutSummary>(fallbackSummary);
-  const [streams, setStreams] = useState<StreamRecord[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [streamsLoading, setStreamsLoading] = useState(false);
-  const [withdrawing, setWithdrawing] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const summaryQuery = useCreatorSummary(address);
+  const streamsQuery = useStreams(Boolean(address));
+  const balancesQuery = useWalletGatewayBalances(address);
+  const createStreamMutation = useCreateStream();
+  const withdrawalMutation = useGatewayWithdrawal();
+  const summary = summaryQuery.data ?? fallbackSummary;
+  const streams = streamsQuery.data ?? [];
+  const balances = balancesQuery.data;
+  const loading = Boolean(address) && summaryQuery.isPending;
+  const streamsLoading = Boolean(address) && streamsQuery.isPending;
+  const gatewayBalance = balances?.gateway.formattedAvailable ?? "0";
+  const walletBalance =
+    balances?.wallet.formatted == null
+      ? "0"
+      : Number(balances.wallet.formatted).toFixed(2);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [withdrawMessage, setWithdrawMessage] = useState<string | null>(null);
-  const [gatewayBalance, setGatewayBalance] = useState<string>("0");
-  const [walletBalance, setWalletBalance] = useState<string>("0");
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
   const [playbackUrl, setPlaybackUrl] = useState("");
@@ -51,110 +56,6 @@ export default function CreatorDashboardPage() {
       )
     : [];
 
-  useEffect(() => {
-    if (!address) {
-      setSummary(fallbackSummary);
-      setError(null);
-      setGatewayBalance("0");
-      setWalletBalance("0");
-      return;
-    }
-
-    let active = true;
-    let initialLoad = true;
-    let requestPending = false;
-    const loadSummary = async () => {
-      if (requestPending) return;
-      requestPending = true;
-      try {
-        const data = await getCreatorPayoutSummary(address);
-        if (active) setSummary(data);
-      } catch (loadError) {
-        console.error("Failed to load creator settlement summary", loadError);
-        if (active && initialLoad) {
-          setError("Unable to load settlement summary");
-          setSummary(fallbackSummary);
-        }
-      } finally {
-        requestPending = false;
-        if (active && initialLoad) {
-          setLoading(false);
-          initialLoad = false;
-        }
-      }
-    };
-
-    setLoading(true);
-    setError(null);
-    void loadSummary();
-    const intervalId = window.setInterval(() => void loadSummary(), 5_000);
-    const refreshWhenVisible = () => {
-      if (document.visibilityState === "visible") void loadSummary();
-    };
-    document.addEventListener("visibilitychange", refreshWhenVisible);
-
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-      document.removeEventListener("visibilitychange", refreshWhenVisible);
-    };
-  }, [address]);
-
-  useEffect(() => {
-    if (!address) return;
-
-    let active = true;
-    const refreshBalances = async () => {
-      try {
-        const balances = await getGatewayBalances(address);
-        if (!active) return;
-        setGatewayBalance(balances.gateway.formattedAvailable || "0");
-        if (balances.wallet.formatted !== null) {
-          setWalletBalance(Number(balances.wallet.formatted).toFixed(2));
-        }
-      } catch (balanceError) {
-        console.error("Failed to refresh creator balances", balanceError);
-      }
-    };
-
-    const refreshWhenVisible = () => {
-      if (document.visibilityState === "visible") void refreshBalances();
-    };
-
-    void refreshBalances();
-    const intervalId = window.setInterval(() => void refreshBalances(), 15_000);
-    document.addEventListener("visibilitychange", refreshWhenVisible);
-
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-      document.removeEventListener("visibilitychange", refreshWhenVisible);
-    };
-  }, [address]);
-
-  useEffect(() => {
-    if (!address) {
-      setStreams([]);
-      return;
-    }
-    let active = true;
-    setStreamsLoading(true);
-    listStreams()
-      .then((records) => {
-        if (active) setStreams(records);
-      })
-      .catch((loadError) => {
-        console.error("Failed to load creator streams", loadError);
-        if (active) setError("Unable to load creator streams");
-      })
-      .finally(() => {
-        if (active) setStreamsLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [address]);
-
   const handleCreateStream = async (
     event: React.FormEvent<HTMLFormElement>
   ) => {
@@ -163,10 +64,9 @@ export default function CreatorDashboardPage() {
       setCreateError("Connect your wallet before creating a stream.");
       return;
     }
-    setCreating(true);
     setCreateError(null);
     try {
-      const created = await createStream({
+      await createStreamMutation.mutateAsync({
         title,
         creatorId: address,
         creatorWallet: address,
@@ -174,7 +74,6 @@ export default function CreatorDashboardPage() {
         playbackUrl,
         ratePerMinute: Number(ratePerMinute),
       });
-      setStreams((current) => [created, ...current]);
       setTitle("");
       setCategory("");
       setPlaybackUrl("");
@@ -186,8 +85,6 @@ export default function CreatorDashboardPage() {
           ? createFailure.message
           : "Unable to create stream."
       );
-    } finally {
-      setCreating(false);
     }
   };
 
@@ -195,14 +92,17 @@ export default function CreatorDashboardPage() {
 
   const settlementIndicator = loading
     ? "Loading payouts..."
-    : withdrawMessage ?? error ?? "Settlement synced";
+    : withdrawMessage ??
+      error ??
+      (summaryQuery.isError
+        ? "Unable to load settlement summary"
+        : "Settlement synced");
 
   const handleWithdraw = async () => {
     if (!address || !walletClient || Number(gatewayBalance) <= 0) {
       return;
     }
 
-    setWithdrawing(true);
     setError(null);
     setWithdrawMessage(null);
 
@@ -218,12 +118,12 @@ export default function CreatorDashboardPage() {
             message: params.message,
           } as never),
       };
-      const result = await withdrawFromGateway(
-        gatewayBalance,
-        address,
+      const result = await withdrawalMutation.mutateAsync({
+        amount: gatewayBalance,
+        recipient: address,
         walletClient,
-        gatewaySigner
-      );
+        signer: gatewaySigner,
+      });
 
       setWithdrawMessage(
         `Withdrawal of $${result.amount} initiated: ${result.mintTxHash?.slice(
@@ -231,13 +131,6 @@ export default function CreatorDashboardPage() {
           12
         )}`
       );
-
-      // Refresh balances after withdrawal
-      const balances = await getGatewayBalances(address);
-      setGatewayBalance(balances.gateway.formattedAvailable || "0");
-      if (balances.wallet.formatted !== null) {
-        setWalletBalance(Number(balances.wallet.formatted).toFixed(2));
-      }
     } catch (withdrawError) {
       console.error("Withdrawal failed", withdrawError);
       setError(
@@ -245,8 +138,6 @@ export default function CreatorDashboardPage() {
           ? withdrawError.message
           : "Withdrawal request failed"
       );
-    } finally {
-      setWithdrawing(false);
     }
   };
 
@@ -277,6 +168,43 @@ export default function CreatorDashboardPage() {
             </button>
           </div>
         </header>
+
+        {streamsQuery.isError && (
+          <div
+            role="alert"
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+          >
+            <span>
+              Unable to load creator streams: {streamsQuery.error.message}
+            </span>
+            <button
+              type="button"
+              onClick={() => void streamsQuery.refetch()}
+              disabled={streamsQuery.isFetching}
+              className="font-semibold text-white underline underline-offset-2 disabled:opacity-60"
+            >
+              {streamsQuery.isFetching ? "Retrying..." : "Retry"}
+            </button>
+          </div>
+        )}
+        {balancesQuery.isError && (
+          <div
+            role="alert"
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100"
+          >
+            <span>
+              Unable to refresh wallet balances: {balancesQuery.error.message}
+            </span>
+            <button
+              type="button"
+              onClick={() => void balancesQuery.refetch()}
+              disabled={balancesQuery.isFetching}
+              className="font-semibold text-white underline underline-offset-2 disabled:opacity-60"
+            >
+              {balancesQuery.isFetching ? "Retrying..." : "Retry"}
+            </button>
+          </div>
+        )}
 
         <section className="mb-8 grid gap-4 md:grid-cols-4">
           {[
@@ -387,13 +315,15 @@ export default function CreatorDashboardPage() {
               disabled={
                 !address ||
                 !walletClient ||
-                withdrawing ||
+                withdrawalMutation.isPending ||
                 Number(gatewayBalance) <= 0
               }
               onClick={handleWithdraw}
               className="rounded-full bg-brand-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {withdrawing ? "Withdrawing..." : "Withdraw from Gateway"}
+              {withdrawalMutation.isPending
+                ? "Withdrawing..."
+                : "Withdraw from Gateway"}
             </button>
           </div>
 
@@ -489,14 +419,14 @@ export default function CreatorDashboardPage() {
                 />
               </label>
               <label className="text-sm text-slate-300 sm:col-span-2">
-                Video URL (MP4 or WebM)
+                Stream URL (Twitch, YouTube, HLS, MP4, or WebM)
                 <input
                   required
                   type="url"
                   pattern="https?://.+"
                   value={playbackUrl}
                   onChange={(event) => setPlaybackUrl(event.target.value)}
-                  placeholder="https://media.example.com/video.mp4"
+                  placeholder="https://media.example.com/live.m3u8 or a Twitch/YouTube link"
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white"
                 />
               </label>
@@ -505,12 +435,16 @@ export default function CreatorDashboardPage() {
                 <input
                   required
                   type="number"
-                  min="0.001"
+                  min={MIN_STREAM_RATE_PER_MINUTE}
+                  max={MAX_STREAM_RATE_PER_MINUTE}
                   step="0.001"
                   value={ratePerMinute}
                   onChange={(event) => setRatePerMinute(event.target.value)}
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white"
                 />
+                <span className="mt-1 block text-xs text-slate-400">
+                  $0.001 to $100.00 USDC per minute
+                </span>
               </label>
             </div>
             {createError && (
@@ -528,10 +462,12 @@ export default function CreatorDashboardPage() {
               </button>
               <button
                 type="submit"
-                disabled={creating || !address}
+                disabled={createStreamMutation.isPending || !address}
                 className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
               >
-                {creating ? "Creating..." : "Create stream"}
+                {createStreamMutation.isPending
+                  ? "Creating..."
+                  : "Create stream"}
               </button>
             </div>
           </form>

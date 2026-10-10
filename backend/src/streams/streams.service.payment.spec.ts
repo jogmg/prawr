@@ -15,8 +15,24 @@ import { SettlementService } from "../settlement/settlement.service";
 import type { StreamDocument } from "./schemas/stream.schema";
 import type { WatchSessionDocument } from "./schemas/watch-session.schema";
 import { quoteWatchBlock, StreamsService } from "./streams.service";
+import { normalizeStreamRate } from "./stream.constants";
 
 describe("StreamsService paid watch accounting", () => {
+  it("accepts creator rates within the configured range", () => {
+    expect(normalizeStreamRate(0.001)).toBe(0.001);
+    expect(normalizeStreamRate(100)).toBe(100);
+    expect(normalizeStreamRate(0.1234)).toBe(0.123);
+  });
+
+  it.each([0, 0.0009, 100.001, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects an invalid creator rate: %s",
+    (rate) => {
+      expect(() => normalizeStreamRate(rate)).toThrow(
+        "ratePerMinute must be between 0.001 and 100 USDC."
+      );
+    }
+  );
+
   const makeService = () => {
     const session = {
       sessionId: "session-1",
@@ -65,13 +81,20 @@ describe("StreamsService paid watch accounting", () => {
       new SettlementService()
     );
 
-    return { service, session, gatewayReceiptModel };
+    return { service, session, stream, gatewayReceiptModel };
   };
 
   it("quotes a full 30-second viewing block", () => {
     expect(quoteWatchBlock(0.02)).toEqual({
       seconds: 30,
       amount: "0.00999",
+    });
+  });
+
+  it("quotes a custom viewing duration using the stream rate", () => {
+    expect(quoteWatchBlock(0.02, 60)).toEqual({
+      seconds: 60,
+      amount: "0.01998",
     });
   });
 
@@ -101,6 +124,15 @@ describe("StreamsService paid watch accounting", () => {
         network: "eip155:5042002",
       })
     );
+  });
+
+  it("records a custom paid duration as prepaid credit", async () => {
+    const { service, session } = makeService();
+
+    const updated = await service.recordWatchBlock("session-1", "0.01998", 60);
+
+    expect(updated.prepaidSeconds).toBe(60);
+    expect(updated.charge).toBe("0.01998");
   });
 
   it("continues granting blocks after cumulative charges exceed two USDC", async () => {
@@ -167,6 +199,27 @@ describe("StreamsService paid watch accounting", () => {
     }
   });
 
+  it("consumes custom-duration prepaid time after a longer interruption", async () => {
+    const { service, session } = makeService();
+    session.prepaidSeconds = 60;
+    session.lastHeartbeatAt = new Date("2026-10-03T00:00:00.000Z");
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date("2026-10-03T00:00:45.000Z"));
+
+    try {
+      const restored = await service.restoreSession(
+        "session-1",
+        "access-token"
+      );
+
+      expect(restored.status).toBe("paused");
+      expect(restored.prepaidSeconds).toBe(15);
+      expect(restored.secondsWatched).toBe(45);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("rejects payment that does not match the quoted block", async () => {
     const { service, session, gatewayReceiptModel } = makeService();
 
@@ -185,5 +238,16 @@ describe("StreamsService paid watch accounting", () => {
       service.recordWatchBlock("session-1", "0.00999", 30)
     ).rejects.toThrow("The current prepaid viewing block has not been used");
     expect(session.save).not.toHaveBeenCalled();
+  });
+
+  it("rejects purchasing more viewing time after a stream goes offline", async () => {
+    const { service, session, stream, gatewayReceiptModel } = makeService();
+    stream.status = "offline" as never;
+
+    await expect(
+      service.recordWatchBlock("session-1", "0.00999", 30)
+    ).rejects.toThrow("Cannot buy viewing time for a stream that is not live.");
+    expect(session.save).not.toHaveBeenCalled();
+    expect(gatewayReceiptModel.create).not.toHaveBeenCalled();
   });
 });

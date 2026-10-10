@@ -8,9 +8,9 @@ Prawr is a decentralized micropayment streaming MVP built on Arc. The project is
 
 ## Current status
 
-The Arc Testnet MVP currently supports Mongo-backed stream discovery, creator stream management, direct MP4/WebM playback, wallet-signed session caps, per-second Circle Gateway x402 payments during active playback, and persisted payment receipts. Creator summaries read those receipts, and Gateway payments are addressed to the stream creator's wallet.
+The Arc Testnet MVP currently supports Mongo-backed stream discovery, creator stream management, Twitch and YouTube embeds, HLS (`.m3u8`), and direct MP4/WebM playback. Wallet-signed session caps, per-second Circle Gateway x402 payments during active playback, and persisted payment receipts apply to all supported player types. Creator summaries read those receipts, and Gateway payments are addressed to the stream creator's wallet.
 
-Video hosting and live ingest are not implemented. A creator must provide a publicly reachable direct MP4 or WebM URL that the viewer's browser can play. The player pauses metering while paused or buffering. The settlement contract remains scaffolding; Gateway receipts are not rolled into contract payouts.
+Video hosting and live ingest are not implemented. Creators provide a public Twitch or YouTube URL, an HLS playlist URL, or a direct MP4/WebM URL. HLS hosts must permit cross-origin playback from the Prawr frontend, and Twitch/YouTube content must allow embedding. The player pauses metering while paused or buffering. The settlement contract remains scaffolding; Gateway receipts are not rolled into contract payouts.
 
 ## Getting started
 
@@ -88,7 +88,8 @@ frontend so Next.js includes the value. Confirm the deployment on the [Arc
 Testnet Explorer](https://explorer.testnet.arc.io/).
 
 Connect the creator wallet in `/creator` and use **Create Stream** to save a
-title, category, rate, and publicly reachable direct MP4/WebM playback URL. The
+title, category, rate, and publicly reachable Twitch, YouTube, HLS, MP4, or
+WebM playback URL. The
 homepage and watch route then use the Mongo-backed stream ID. Each successful
 Gateway-paid second while the video is playing creates a receipt in MongoDB.
 This is testnet code only and has not been validated with live Circle

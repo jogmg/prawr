@@ -8,6 +8,7 @@ export type StreamRecord = {
   ratePerMinute: number;
   status: "live" | "scheduled" | "offline";
   createdAt: string;
+  hasPrepaidTime?: boolean;
 };
 
 export type PaymentRequirements = {

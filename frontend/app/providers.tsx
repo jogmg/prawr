@@ -1,10 +1,11 @@
 "use client";
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { ConnectKitProvider, getDefaultConfig } from "connectkit";
 import { useState } from "react";
 import { arcTestnet } from "viem/chains";
 import { WagmiProvider, createConfig, http } from "wagmi";
+import { createAppQueryClient } from "./lib/queries/query-config";
 
 const config = createConfig(
   getDefaultConfig({
@@ -24,7 +25,7 @@ const config = createConfig(
 );
 
 export function Providers({ children }: { children: React.ReactNode }) {
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(createAppQueryClient);
 
   return (
     <WagmiProvider config={config}>

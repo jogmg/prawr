@@ -16,7 +16,11 @@ import {
   CreateStreamDto,
   WatchSessionControlDto,
 } from "./stream.dto";
-import { quoteWatchBlock, StreamsService } from "./streams.service";
+import {
+  MAX_WATCH_BLOCK_SECONDS,
+  quoteWatchBlock,
+  StreamsService,
+} from "./streams.service";
 import { GatewayMiddleware } from "../gateway/gateway.middleware";
 
 /** Express request augmented by the Gateway middleware after settlement. */
@@ -183,16 +187,27 @@ export class StreamsController {
       return;
     }
 
-    const block = quoteWatchBlock(stream.ratePerMinute);
-
-    const body = req.body as { blockSeconds?: number } | undefined;
-    if (body?.blockSeconds !== block.seconds) {
-      res.status(400).json({
-        message: `The next block must be ${block.seconds} seconds`,
-        blockSeconds: block.seconds,
+    if (stream.status !== "live") {
+      res.status(409).json({
+        message:
+          "This stream has ended. Only existing prepaid viewing time can be used.",
       });
       return;
     }
+
+    const body = req.body as { blockSeconds?: number } | undefined;
+    const blockSeconds = body?.blockSeconds ?? 30;
+    if (
+      !Number.isInteger(blockSeconds) ||
+      blockSeconds <= 0 ||
+      blockSeconds > MAX_WATCH_BLOCK_SECONDS
+    ) {
+      res.status(400).json({
+        message: `Viewing duration must be between 1 and ${MAX_WATCH_BLOCK_SECONDS} seconds`,
+      });
+      return;
+    }
+    const block = quoteWatchBlock(stream.ratePerMinute, blockSeconds);
 
     if (this.activePayments.has(sessionId)) {
       res

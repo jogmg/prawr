@@ -8,6 +8,7 @@ import {
   GatewayReceiptDocument,
 } from "../gateway/gateway-receipt.schema";
 import { SettlementService } from "../settlement/settlement.service";
+import { normalizeStreamRate } from "./stream.constants";
 import { Stream, StreamDocument } from "./schemas/stream.schema";
 import {
   WatchSession,
@@ -17,17 +18,30 @@ import {
 export type StreamStatus = "live" | "scheduled" | "offline";
 
 export const WATCH_BLOCK_SECONDS = 30;
+export const MAX_WATCH_BLOCK_SECONDS = 24 * 60 * 60;
 
-export function quoteWatchBlock(ratePerMinute: number): {
+export function quoteWatchBlock(
+  ratePerMinute: number,
+  seconds = WATCH_BLOCK_SECONDS
+): {
   seconds: number;
   amount: string;
 } {
+  if (
+    !Number.isInteger(seconds) ||
+    seconds <= 0 ||
+    seconds > MAX_WATCH_BLOCK_SECONDS
+  ) {
+    throw new Error(
+      `Viewing duration must be between 1 and ${MAX_WATCH_BLOCK_SECONDS} seconds.`
+    );
+  }
   const perSecondAtomic = BigInt(
     Math.max(1, Math.round((ratePerMinute / 60) * 1_000_000))
   );
   return {
-    seconds: WATCH_BLOCK_SECONDS,
-    amount: formatUnits(perSecondAtomic * BigInt(WATCH_BLOCK_SECONDS), 6),
+    seconds,
+    amount: formatUnits(perSecondAtomic * BigInt(seconds), 6),
   };
 }
 
@@ -133,9 +147,7 @@ export class StreamsService {
     if (!/^https?:\/\//i.test(playbackUrl)) {
       throw new Error("Playback URL must use HTTP or HTTPS.");
     }
-    if (!Number.isFinite(input.ratePerMinute) || input.ratePerMinute <= 0) {
-      throw new Error("ratePerMinute must be a positive number.");
-    }
+    const ratePerMinute = normalizeStreamRate(input.ratePerMinute);
 
     const stream = new this.streamModel({
       id: randomUUID(),
@@ -144,7 +156,7 @@ export class StreamsService {
       creatorWallet,
       category,
       playbackUrl,
-      ratePerMinute: Number(input.ratePerMinute.toFixed(3)),
+      ratePerMinute,
       status: input.status ?? "live",
       createdAt: new Date(),
     });
@@ -169,6 +181,16 @@ export class StreamsService {
 
     const stream = await this.getStreamById(input.streamId);
     if (!stream) throw new Error("Stream does not exist.");
+    if (stream.status !== "live") {
+      throw new Error(
+        "Cannot start a watch session for a stream that is not live."
+      );
+    }
+    if (stream.status !== "live") {
+      throw new Error(
+        "Cannot start a watch session for a stream that is not live."
+      );
+    }
 
     if (!input.viewerWallet.trim())
       throw new Error("viewerWallet is required.");
@@ -267,6 +289,11 @@ export class StreamsService {
 
     const stream = await this.getStreamById(session.streamId);
     if (!stream) throw new Error("Stream not found.");
+    if (stream.status !== "live") {
+      throw new Error(
+        "Cannot start a watch session for a stream that is not live."
+      );
+    }
 
     session.status = "paused";
     session.startedAt = new Date();
@@ -403,7 +430,10 @@ export class StreamsService {
 
     const stream = await this.getStreamById(session.streamId);
     if (!stream) throw new Error("Stream not found.");
-    const quote = quoteWatchBlock(stream.ratePerMinute);
+    if (stream.status !== "live") {
+      throw new Error("Cannot buy viewing time for a stream that is not live.");
+    }
+    const quote = quoteWatchBlock(stream.ratePerMinute, blockSeconds);
     if (
       blockSeconds !== quote.seconds ||
       amount !== parseUnits(quote.amount, 6)
@@ -437,7 +467,7 @@ export class StreamsService {
     const lastHeartbeat = session.lastHeartbeatAt ?? session.startedAt ?? now;
     const elapsedSeconds = Math.min(
       Math.floor((now.getTime() - lastHeartbeat.getTime()) / 1000),
-      WATCH_BLOCK_SECONDS
+      session.prepaidSeconds ?? 0
     );
     if (elapsedSeconds <= 0) return;
     const consumedSeconds = Math.min(

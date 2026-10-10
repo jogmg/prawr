@@ -1,35 +1,102 @@
 "use client";
 
 import { ConnectKitButton } from "connectkit";
-import { useEffect, useMemo, useState } from "react";
-import { listStreams, type StreamRecord } from "./lib/prawr-api";
+import { useEffect, useMemo, useRef } from "react";
+import ReactPlayer from "react-player/lazy";
+import { useDiscoverableStreams } from "./lib/hooks/use-stream-queries";
+
+function StreamPreview({ playbackUrl }: { playbackUrl?: string }) {
+  const playerRef = useRef<ReactPlayer | null>(null);
+  const isTwitch = playbackUrl?.includes("twitch.tv");
+
+  // Fix loop for Twitch by manually polling the player time
+  useEffect(() => {
+    if (!isTwitch) return; // Ensure we only poll for Twitch streams
+
+    const interval = setInterval(() => {
+      const internalPlayer = playerRef.current?.getInternalPlayer();
+      if (
+        internalPlayer &&
+        typeof internalPlayer.getCurrentTime === "function"
+      ) {
+        const currentTime = internalPlayer.getCurrentTime();
+        if (currentTime >= 60) {
+          playerRef.current?.seekTo(0, "seconds");
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isTwitch, playbackUrl]);
+
+  return (
+    <div className="relative h-60 w-full bg-black">
+      <ReactPlayer
+        className="aspect-video w-full bg-black"
+        ref={playerRef}
+        url={playbackUrl}
+        width="100%"
+        height="100%"
+        controls={false}
+        playing={true}
+        muted={true}
+        playsinline={true}
+        progressInterval={1000}
+        onProgress={({ playedSeconds }) => {
+          if (!isTwitch && playedSeconds >= 60) {
+            playerRef.current?.seekTo(0, "seconds");
+          }
+        }}
+        // FIX: Pass the iframe attribute straight down through standard HTML layout attributes
+        // This bypasses strict inner config checks while embedding 'allow' rules perfectly
+        config={{
+          file: {
+            hlsVersion: "1.5.17",
+            attributes: {
+              allow: "autoplay; encrypted-media",
+            },
+          },
+          twitch: {
+            options: {
+              autoplay: true,
+              muted: true,
+              controls: false,
+              parent:
+                typeof window !== "undefined" &&
+                window.location.hostname !== "localhost"
+                  ? [window.location.hostname]
+                  : ["localhost"],
+            },
+          },
+          youtube: { playerVars: { controls: 0, disablekb: 1 } },
+        }}
+      />
+      {/* Absolute overlay ensures user clicks map to navigation instead of the player iframe */}
+      <div className="absolute inset-0 z-10 bg-transparent" />
+    </div>
+  );
+}
 
 export default function HomePage() {
-  const [streams, setStreams] = useState<StreamRecord[]>([]);
-
-  useEffect(() => {
-    const loadStreams = async () => {
-      try {
-        const records = await listStreams();
-        setStreams(records);
-      } catch (error) {
-        console.warn("Unable to load streams from the backend.", error);
-      }
-    };
-
-    void loadStreams();
-  }, []);
+  const streamsQuery = useDiscoverableStreams();
+  const streams = streamsQuery.data;
 
   const streamCards = useMemo(
     () =>
-      streams.map((stream) => ({
-        ...stream,
-        rate: `$${stream.ratePerMinute
-          .toFixed(3)
-          .replace(/0+$/, "")
-          .replace(/\.$/, "")}/min`,
-        status: stream.status.toUpperCase(),
-      })),
+      streams
+        .filter(
+          (stream) =>
+            stream.status === "live" ||
+            (stream.status === "offline" && stream.hasPrepaidTime)
+        )
+        .map((stream) => ({
+          ...stream,
+          rate: `$${stream.ratePerMinute
+            .toFixed(3)
+            .replace(/0+$/, "")
+            .replace(/\.$/, "")}/min`,
+          status: stream.status.toUpperCase(),
+        })),
     [streams]
   );
   return (
@@ -150,6 +217,11 @@ export default function HomePage() {
             </a>
           </div>
 
+          {streamsQuery.isError && (
+            <p role="alert" className="mb-4 text-sm text-red-300">
+              Unable to load streams. Please try again shortly.
+            </p>
+          )}
           <div className="grid gap-5 md:grid-cols-3">
             {streamCards.map((stream) => (
               <article key={stream.id} className="card overflow-hidden">
@@ -159,26 +231,11 @@ export default function HomePage() {
                     aria-label={`Watch ${stream.title}`}
                     className="block"
                   >
-                    <video
-                      src={stream.playbackUrl}
-                      muted
-                      autoPlay
-                      playsInline
-                      preload="metadata"
-                      aria-hidden="true"
-                      className="h-52 w-full bg-black object-cover"
-                      onTimeUpdate={(e) => {
-                        const video = e.currentTarget;
-
-                        // If the video plays past 60 seconds, reset to 0
-                        if (video.currentTime >= 60) {
-                          video.currentTime = 0;
-                          void video.play(); // Ensure it keeps playing after reset
-                        }
-                      }}
-                    />
+                    <StreamPreview playbackUrl={stream.playbackUrl} />
                     <div className="absolute left-3 top-3 inline-flex rounded-full bg-red-500 px-2 py-1 text-xs font-bold uppercase tracking-wide text-white">
-                      {stream.status}
+                      {stream.status === "OFFLINE"
+                        ? "ENDED · PAID TIME LEFT"
+                        : stream.status}
                     </div>
                   </a>
                 </div>
@@ -198,14 +255,21 @@ export default function HomePage() {
                     href={`/watch/${encodeURIComponent(stream.id)}`}
                     className="inline-flex rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-200"
                   >
-                    Watch Live
+                    {stream.status === "OFFLINE"
+                      ? "Use paid time"
+                      : "Watch Live"}
                   </a>
                 </div>
               </article>
             ))}
-            {streamCards.length === 0 && (
+            {streamsQuery.isPending && streamCards.length === 0 && (
               <p className="col-span-full py-10 text-center text-slate-400">
-                No streams are available from the backend yet.
+                Loading streams...
+              </p>
+            )}
+            {!streamsQuery.isPending && streamCards.length === 0 && (
+              <p className="col-span-full py-10 text-center text-slate-400">
+                No live streams are available right now.
               </p>
             )}
           </div>

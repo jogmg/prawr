@@ -5,7 +5,13 @@ import {
   IsPositive,
   IsString,
   IsUrl,
+  Max,
+  Min,
 } from "class-validator";
+import {
+  MAX_STREAM_RATE_PER_MINUTE,
+  MIN_STREAM_RATE_PER_MINUTE,
+} from "./stream.constants";
 
 export class CreateStreamDto {
   @IsString()
@@ -28,7 +34,8 @@ export class CreateStreamDto {
   playbackUrl!: string;
 
   @IsNumber()
-  @IsPositive()
+  @Min(MIN_STREAM_RATE_PER_MINUTE)
+  @Max(MAX_STREAM_RATE_PER_MINUTE)
   ratePerMinute!: number;
 
   @IsOptional()
