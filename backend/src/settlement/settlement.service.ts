@@ -381,10 +381,7 @@ export class SettlementService {
 
     const apiKey = this.configService?.get<string>("GATEWAY_API_KEY");
     const facilitatorUrl = this.configService
-      ?.get<string>(
-        "GATEWAY_FACILITATOR_URL",
-        "https://gateway-api-testnet.circle.com"
-      )
+      ?.get<string>("GATEWAY_FACILITATOR_URL", "https://gateway-api.circle.com")
       .replace(/\/$/, "");
 
     try {
@@ -401,7 +398,7 @@ export class SettlementService {
           sources: [
             {
               depositor: address,
-              // Arc Testnet Gateway domain (GATEWAY_DOMAINS.arcTestnet)
+              // Arc Gateway domain (shared by mainnet and testnet)
               domain: 26,
             },
           ],

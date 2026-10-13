@@ -30,10 +30,10 @@ export class GatewayMiddleware {
     const apiKey = config.get<string>("GATEWAY_API_KEY");
     this.config = {
       sellerAddress: config.get<string>("GATEWAY_SELLER_ADDRESS", ""),
-      networks: config.get<string>("GATEWAY_CHAIN", "eip155:5042002"),
+      networks: config.get<string>("GATEWAY_CHAIN", "eip155:5042"),
       facilitatorUrl: config.get<string>(
         "GATEWAY_FACILITATOR_URL",
-        "https://gateway-api-testnet.circle.com"
+        "https://gateway-api.circle.com"
       ),
       description: "Prawr stream access",
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,

@@ -14,13 +14,12 @@ import {
   type Hex,
   type WalletClient,
 } from "viem";
-import { arcTestnet } from "viem/chains";
 import type { BatchEvmSigner } from "@circle-fin/x402-batching";
 
-const ARC = CHAIN_CONFIGS.arcTestnet;
+const ARC = CHAIN_CONFIGS.arc;
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
-const GATEWAY_API_URL = "https://gateway-api-testnet.circle.com";
+const GATEWAY_API_URL = "https://gateway-api.circle.com";
 
 const erc20Abi = [
   {
@@ -100,9 +99,9 @@ export type GatewayWithdrawalSigner = {
 
 function publicClient() {
   return createPublicClient({
-    chain: arcTestnet,
+    chain: ARC.chain,
     transport: http(
-      process.env.NEXT_PUBLIC_ARC_RPC_URL ?? "https://rpc.testnet.arc.io"
+      process.env.NEXT_PUBLIC_ARC_RPC_URL ?? "https://rpc.mainnet.arc.io"
     ),
   });
 }
@@ -121,8 +120,7 @@ export async function depositToGateway(
     functionName: "balanceOf",
     args: [account.address],
   });
-  if (balance < value)
-    throw new Error("Insufficient Arc Testnet USDC balance.");
+  if (balance < value) throw new Error("Insufficient Arc USDC balance.");
 
   const allowance = await client.readContract({
     address: ARC.usdc,
@@ -133,7 +131,7 @@ export async function depositToGateway(
   if (allowance < value) {
     const approval = await walletClient.writeContract({
       account,
-      chain: arcTestnet,
+      chain: ARC.chain,
       address: ARC.usdc,
       abi: erc20Abi,
       functionName: "approve",
@@ -144,7 +142,7 @@ export async function depositToGateway(
 
   const deposit = await walletClient.writeContract({
     account,
-    chain: arcTestnet,
+    chain: ARC.chain,
     address: ARC.gatewayWallet,
     abi: gatewayWalletAbi,
     functionName: "deposit",
@@ -279,7 +277,7 @@ export async function withdrawFromGateway(
 ) {
   if (!walletClient.account) throw new Error("Connect a wallet to withdraw.");
   const value = parseUnits(amount, 6);
-  const destination = CHAIN_CONFIGS.arcTestnet;
+  const destination = CHAIN_CONFIGS.arc;
   const addressToBytes32 = (address: Address) =>
     pad(address.toLowerCase() as Address, { size: 32 });
   const intent = {
@@ -388,7 +386,7 @@ export async function withdrawFromGateway(
 
   const mintTxHash = await walletClient.writeContract({
     account: walletClient.account,
-    chain: arcTestnet,
+    chain: ARC.chain,
     address: destination.gatewayMinter,
     abi: gatewayMinterAbi,
     functionName: "gatewayMint",

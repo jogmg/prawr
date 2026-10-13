@@ -296,7 +296,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
       toast.success("Funds added to your viewing balance.");
     } catch (err) {
       console.error("Deposit failed", err);
-      setError("Deposit failed. Make sure your wallet has testnet USDC.");
+      setError("Deposit failed. Make sure your wallet has Arc USDC.");
     }
   };
 

@@ -156,7 +156,7 @@ export class StreamsController {
       paymentRequirements: {
         price: block.amount,
         description: `Watch ${stream.title} - $${stream.ratePerMinute}/min`,
-        network: this.config.get<string>("GATEWAY_CHAIN", "eip155:5042002"),
+        network: this.config.get<string>("GATEWAY_CHAIN", "eip155:5042"),
       },
     };
   }
