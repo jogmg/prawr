@@ -1,19 +1,33 @@
 # Payment Flow
 
-## Session funding
+## Session authorization
 
-A viewer funds a specific session escrow from their own Arc wallet. The deposited amount is the hard maximum charge for that session. The contract binds the session to the viewer and creator and enforces the cap. Arc native USDC value uses 18 decimals.
+A viewer signs an authorization binding the session to the stream and viewer wallet. The signature does not grant spending authority; each viewing block is separately paid through x402.
 
-## Usage meter
+## Prepaid viewing blocks
 
-The backend prototype derives elapsed time from server receipt times for token-authorized start, heartbeat, pause, resume, and stop requests. It ignores client-supplied charge amounts, caps each heartbeat gap at 30 seconds, and stops at the session authorization cap. The displayed client timer is not used for accounting. This does not prove that video played, and the current in-memory session store is lost on restart.
+Before playback begins, the viewer pays for 30 seconds of viewing. The backend computes the exact block price from the stream rate. Payment grants prepaid time; heartbeats consume that credit and playback pauses when it runs out. Unused prepaid time is not refunded when a viewer stops early. Viewers can continue buying blocks as long as their Gateway balance can cover each payment.
 
-## Finalization and refund
+The viewer explicitly pays for each next block. The client displays the server-calculated duration and amount before requesting the wallet signature. This reduces signature prompts from once per second to once per block, while keeping payment approval in the viewer's hands.
 
-The settlement operator can finalize a session once and charge no more than its deposited cap. The unused difference becomes a viewer refund balance; an unfinalized session can be refunded by its viewer after expiry. Creator claims are limited to balances credited by finalized sessions.
+Playback URLs must be protected for this to enforce payment. A public direct media URL can be played outside the app and bypass the payment gate.
 
-The backend does not yet verify the escrow-open transaction, persist session/funding state, or submit operator finalization. Thus this prototype cannot settle real watch-time charges. Testnet escrow funding is opt-in; do not enable it for real funds.
+## Receipt validation
 
-## Circle Gateway Nanopayments
+Each receipt must:
 
-Gateway Nanopayments supports Arc Testnet and Mainnet and batches EIP-3009 payments, but each exact payment requires its own EOA authorization. There is no documented reusable session spend cap, and the nanopayment path does not support ERC-1271 smart-contract signatures. It is therefore not used for the streaming session rail; it may fit discrete paid API/resource requests.
+- match stream and session IDs
+- be signed by the viewer wallet
+- include the correct creator identity
+- be monotonic with cumulative accounting
+- match the amount and duration of the requested viewing block
+- not be expired
+- not be a replay of a prior valid receipt
+
+## Aggregation
+
+Receipts accumulate and are rolled into settlement checkpoints instead of one blockchain transaction per second.
+
+## Settlement
+
+The preferred design is Circle Gateway Nanopayments for batched, gasless settlement. If that cannot support the end-to-end V1 flow, the fallback is a custom Arc-native settlement contract that pays verified creator balances in USDC.

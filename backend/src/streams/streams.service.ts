@@ -1,17 +1,49 @@
 import { Injectable } from "@nestjs/common";
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import { InjectModel } from "@nestjs/mongoose";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
+import { Model } from "mongoose";
 import { formatUnits, parseUnits } from "viem";
+import {
+  GatewayReceipt,
+  GatewayReceiptDocument,
+} from "../gateway/gateway-receipt.schema";
 import { SettlementService } from "../settlement/settlement.service";
+import { normalizeStreamRate } from "./stream.constants";
+import { Stream, StreamDocument } from "./schemas/stream.schema";
+import {
+  WatchSession,
+  WatchSessionDocument,
+} from "./schemas/watch-session.schema";
 
 export type StreamStatus = "live" | "scheduled" | "offline";
-export type WatchSessionStatus =
-  | "authorized"
-  | "playing"
-  | "paused"
-  | "completed"
-  | "capped";
 
-const MAX_HEARTBEAT_GAP_MS = 30_000;
+export const WATCH_BLOCK_SECONDS = 30;
+export const MAX_WATCH_BLOCK_SECONDS = 24 * 60 * 60;
+
+export function quoteWatchBlock(
+  ratePerMinute: number,
+  seconds = WATCH_BLOCK_SECONDS
+): {
+  seconds: number;
+  amount: string;
+} {
+  if (
+    !Number.isInteger(seconds) ||
+    seconds <= 0 ||
+    seconds > MAX_WATCH_BLOCK_SECONDS
+  ) {
+    throw new Error(
+      `Viewing duration must be between 1 and ${MAX_WATCH_BLOCK_SECONDS} seconds.`
+    );
+  }
+  const perSecondAtomic = BigInt(
+    Math.max(1, Math.round((ratePerMinute / 60) * 1_000_000))
+  );
+  return {
+    seconds,
+    amount: formatUnits(perSecondAtomic * BigInt(seconds), 6),
+  };
+}
 
 export interface StreamRecord {
   id: string;
@@ -19,30 +51,32 @@ export interface StreamRecord {
   creatorId: string;
   creatorWallet: string;
   category: string;
+  playbackUrl: string;
   ratePerMinute: number;
   status: StreamStatus;
   createdAt: string;
+}
+
+export interface StreamPage {
+  items: StreamRecord[];
+  nextOffset: number | null;
 }
 
 export interface WatchSessionRecord {
   sessionId: string;
   streamId: string;
   viewerWallet: string;
-  creatorWallet: string;
-  ratePerMinute: number;
-  maxCharge: string;
   authorizationHash: string;
   createdAt: string;
-  status: WatchSessionStatus;
-  billableMilliseconds: number;
+  status: "authorized" | "playing" | "paused" | "completed" | "capped";
+  secondsWatched: number;
+  prepaidSeconds: number;
   charge: string;
+  accessToken?: string;
   startedAt?: string;
   stoppedAt?: string;
-}
-
-interface StoredWatchSession extends WatchSessionRecord {
-  controlTokenHash: string;
-  lastHeartbeatAtMs?: number;
+  accessTokenHash?: string;
+  lastHeartbeatAt?: string;
 }
 
 export interface CreateStreamInput {
@@ -50,6 +84,7 @@ export interface CreateStreamInput {
   creatorId: string;
   creatorWallet: string;
   category: string;
+  playbackUrl: string;
   ratePerMinute: number;
   status?: StreamStatus;
 }
@@ -57,115 +92,143 @@ export interface CreateStreamInput {
 export interface CreateSessionInput {
   streamId: string;
   viewerWallet: string;
-  maxCharge: string;
   authorizationHash: string;
   issuedAt?: string;
 }
 
 @Injectable()
 export class StreamsService {
-  private readonly settlementService = new SettlementService();
-  private readonly streams: StreamRecord[] = [
-    {
-      id: "stream_arc_briefing",
-      title: "Arc Market Briefing",
-      creatorId: "creator_1",
-      creatorWallet: "0x1111111111111111111111111111111111111111",
-      category: "Finance",
-      ratePerMinute: 0.02,
-      status: "live",
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: "stream_creator_studio",
-      title: "Creator Studio Setup",
-      creatorId: "creator_2",
-      creatorWallet: "0x2222222222222222222222222222222222222222",
-      category: "Product",
-      ratePerMinute: 0.015,
-      status: "live",
-      createdAt: new Date().toISOString(),
-    },
-  ];
+  constructor(
+    @InjectModel(Stream.name) private streamModel: Model<StreamDocument>,
+    @InjectModel(WatchSession.name)
+    private sessionModel: Model<WatchSessionDocument>,
+    @InjectModel(GatewayReceipt.name)
+    private gatewayReceiptModel: Model<GatewayReceiptDocument>,
+    private readonly settlementService: SettlementService
+  ) {}
 
-  private readonly sessions: StoredWatchSession[] = [];
-
-  listStreams(): StreamRecord[] {
-    return this.streams.map((stream) => ({ ...stream }));
+  async listStreams(): Promise<StreamRecord[]> {
+    const streams = await this.streamModel
+      .find()
+      .sort({ createdAt: -1, _id: -1 })
+      .exec();
+    return streams.map((stream) => ({
+      id: stream.id,
+      title: stream.title,
+      creatorId: stream.creatorId,
+      creatorWallet: stream.creatorWallet,
+      category: stream.category,
+      playbackUrl: stream.playbackUrl,
+      ratePerMinute: stream.ratePerMinute,
+      status: stream.status,
+      createdAt: stream.createdAt.toISOString(),
+    }));
   }
 
-  getStreamById(id: string): StreamRecord | undefined {
-    return this.streams.find((stream) => stream.id === id);
+  async listStreamsPage(offset: number, limit: number): Promise<StreamPage> {
+    const [streams, total] = await Promise.all([
+      this.streamModel
+        .find()
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(offset)
+        .limit(limit)
+        .exec(),
+      this.streamModel.countDocuments().exec(),
+    ]);
+    return {
+      items: streams.map((stream) => ({
+        id: stream.id,
+        title: stream.title,
+        creatorId: stream.creatorId,
+        creatorWallet: stream.creatorWallet,
+        category: stream.category,
+        playbackUrl: stream.playbackUrl,
+        ratePerMinute: stream.ratePerMinute,
+        status: stream.status,
+        createdAt: stream.createdAt.toISOString(),
+      })),
+      nextOffset:
+        offset + streams.length < total ? offset + streams.length : null,
+    };
   }
 
-  createStream(input: CreateStreamInput): StreamRecord {
+  async getStreamById(id: string): Promise<StreamRecord | undefined> {
+    const stream = await this.streamModel.findOne({ id }).exec();
+    if (!stream) return undefined;
+    return {
+      id: stream.id,
+      title: stream.title,
+      creatorId: stream.creatorId,
+      creatorWallet: stream.creatorWallet,
+      category: stream.category,
+      playbackUrl: stream.playbackUrl,
+      ratePerMinute: stream.ratePerMinute,
+      status: stream.status,
+      createdAt: stream.createdAt.toISOString(),
+    };
+  }
+
+  async createStream(input: CreateStreamInput): Promise<StreamRecord> {
     const title = input.title.trim();
     const creatorId = input.creatorId.trim();
     const creatorWallet = input.creatorWallet.trim();
     const category = input.category.trim();
+    const playbackUrl = input.playbackUrl.trim();
 
-    if (!title) {
-      throw new Error("Stream title is required.");
+    if (!title) throw new Error("Stream title is required.");
+    if (!creatorId) throw new Error("Creator id is required.");
+    if (!creatorWallet) throw new Error("Creator wallet is required.");
+    if (!category) throw new Error("Category is required.");
+    if (!/^https?:\/\//i.test(playbackUrl)) {
+      throw new Error("Playback URL must use HTTP or HTTPS.");
     }
+    const ratePerMinute = normalizeStreamRate(input.ratePerMinute);
 
-    if (!creatorId) {
-      throw new Error("Creator id is required.");
-    }
-
-    if (!category) {
-      throw new Error("Category is required.");
-    }
-
-    this.settlementService.validateWalletAddress(creatorWallet, "creator");
-
-    if (!Number.isFinite(input.ratePerMinute) || input.ratePerMinute <= 0) {
-      throw new Error("ratePerMinute must be a positive number.");
-    }
-
-    const stream: StreamRecord = {
+    const stream = new this.streamModel({
       id: randomUUID(),
       title,
       creatorId,
       creatorWallet,
       category,
-      ratePerMinute: Number(input.ratePerMinute.toFixed(6)),
+      playbackUrl,
+      ratePerMinute,
       status: input.status ?? "live",
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(),
+    });
+
+    await stream.save();
+
+    return {
+      id: stream.id,
+      title: stream.title,
+      creatorId: stream.creatorId,
+      creatorWallet: stream.creatorWallet,
+      category: stream.category,
+      playbackUrl: stream.playbackUrl,
+      ratePerMinute: stream.ratePerMinute,
+      status: stream.status,
+      createdAt: stream.createdAt.toISOString(),
     };
-
-    this.streams.push(stream);
-
-    return { ...stream };
   }
 
-  async createSession(
-    input: CreateSessionInput
-  ): Promise<WatchSessionRecord & { accessToken: string }> {
-    if (!input.streamId) {
-      throw new Error("streamId is required.");
-    }
+  async createSession(input: CreateSessionInput): Promise<WatchSessionRecord> {
+    if (!input.streamId) throw new Error("streamId is required.");
 
-    const stream = this.getStreamById(input.streamId);
-    if (!stream) {
-      throw new Error("Stream does not exist.");
-    }
-
-    if (!input.viewerWallet.trim()) {
-      throw new Error("viewerWallet is required.");
-    }
-
-    let capMicros: bigint;
-    try {
-      capMicros = parseUnits(input.maxCharge, 6);
-    } catch {
+    const stream = await this.getStreamById(input.streamId);
+    if (!stream) throw new Error("Stream does not exist.");
+    if (stream.status !== "live") {
       throw new Error(
-        "maxCharge must be a decimal amount with at most 6 decimals."
+        "Cannot start a watch session for a stream that is not live."
       );
     }
-    if (capMicros <= 0n) {
-      throw new Error("maxCharge must be a positive decimal string.");
+    if (stream.status !== "live") {
+      throw new Error(
+        "Cannot start a watch session for a stream that is not live."
+      );
     }
 
+    if (!input.viewerWallet.trim())
+      throw new Error("viewerWallet is required.");
     if (!input.authorizationHash.trim()) {
       throw new Error("authorizationHash is required.");
     }
@@ -173,179 +236,308 @@ export class StreamsService {
     await this.settlementService.verifySessionAuthorization({
       streamId: input.streamId,
       viewerWallet: input.viewerWallet.trim(),
-      maxCharge: input.maxCharge,
       authorizationHash: input.authorizationHash.trim(),
       issuedAt: input.issuedAt,
     });
 
-    const accessToken = randomBytes(32).toString("hex");
-    const session: StoredWatchSession = {
+    const accessToken = randomUUID();
+    const accessTokenHash = createHash("sha256")
+      .update(accessToken)
+      .digest("hex");
+
+    const session = new this.sessionModel({
       sessionId: randomUUID(),
       streamId: input.streamId,
       viewerWallet: input.viewerWallet.trim(),
-      creatorWallet: stream.creatorWallet,
-      ratePerMinute: stream.ratePerMinute,
-      maxCharge: formatUnits(capMicros, 6),
       authorizationHash: input.authorizationHash.trim(),
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(),
       status: "authorized",
-      billableMilliseconds: 0,
+      secondsWatched: 0,
+      prepaidSeconds: 0,
       charge: "0",
-      controlTokenHash: this.hashToken(accessToken),
+      accessTokenHash,
+    });
+
+    await session.save();
+
+    return {
+      sessionId: session.sessionId,
+      streamId: session.streamId,
+      viewerWallet: session.viewerWallet,
+      authorizationHash: session.authorizationHash,
+      createdAt: session.createdAt.toISOString(),
+      status: session.status,
+      secondsWatched: session.secondsWatched,
+      prepaidSeconds: session.prepaidSeconds ?? 0,
+      charge: session.charge,
+      // Raw token returned ONCE at creation; only its SHA-256 hash is stored.
+      accessToken,
     };
-
-    this.sessions.push(session);
-
-    return { ...this.toPublicSession(session), accessToken };
   }
 
-  startSession(sessionId: string, accessToken: string): WatchSessionRecord {
-    const session = this.getAuthorizedSession(sessionId, accessToken);
-    if (session.status === "playing") {
-      return this.toPublicSession(session);
-    }
-    if (session.status !== "authorized") {
-      throw new Error("Only an authorized session can be started.");
-    }
-
-    const now = Date.now();
-    session.status = "playing";
-    session.startedAt = new Date(now).toISOString();
-    session.lastHeartbeatAtMs = now;
-
-    return this.toPublicSession(session);
+  async getSessionById(
+    sessionId: string
+  ): Promise<WatchSessionRecord | undefined> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) return undefined;
+    return {
+      sessionId: session.sessionId,
+      streamId: session.streamId,
+      viewerWallet: session.viewerWallet,
+      authorizationHash: session.authorizationHash,
+      createdAt: session.createdAt.toISOString(),
+      status: session.status,
+      secondsWatched: session.secondsWatched,
+      prepaidSeconds: session.prepaidSeconds ?? 0,
+      charge: session.charge,
+      startedAt: session.startedAt?.toISOString(),
+      stoppedAt: session.stoppedAt?.toISOString(),
+      lastHeartbeatAt: session.lastHeartbeatAt?.toISOString(),
+      accessTokenHash: session.accessTokenHash,
+    };
   }
 
-  heartbeatSession(sessionId: string, accessToken: string): WatchSessionRecord {
-    const session = this.getAuthorizedSession(sessionId, accessToken);
-    if (
-      session.status !== "playing" ||
-      session.lastHeartbeatAtMs === undefined
-    ) {
-      throw new Error("Session is not playing.");
-    }
-
-    this.accrueServerElapsedTime(session, Date.now());
-    return this.toPublicSession(session);
-  }
-
-  pauseSession(sessionId: string, accessToken: string): WatchSessionRecord {
-    const session = this.getAuthorizedSession(sessionId, accessToken);
-    if (session.status !== "playing") {
-      throw new Error("Only a playing session can be paused.");
-    }
-
-    this.accrueServerElapsedTime(session, Date.now());
-    if (session.status === "playing") {
-      session.status = "paused";
-      session.lastHeartbeatAtMs = undefined;
-    }
-
-    return this.toPublicSession(session);
-  }
-
-  resumeSession(sessionId: string, accessToken: string): WatchSessionRecord {
-    const session = this.getAuthorizedSession(sessionId, accessToken);
-    if (session.status !== "paused") {
-      throw new Error("Only a paused session can be resumed.");
-    }
-
-    session.status = "playing";
-    session.lastHeartbeatAtMs = Date.now();
-
-    return this.toPublicSession(session);
-  }
-
-  stopSession(sessionId: string, accessToken: string): WatchSessionRecord {
-    const session = this.getAuthorizedSession(sessionId, accessToken);
-    if (session.status === "completed" || session.status === "capped") {
-      return this.toPublicSession(session);
-    }
-
-    const capped =
-      session.status === "playing"
-        ? this.accrueServerElapsedTime(session, Date.now())
-        : false;
-
-    if (!capped) {
-      session.status = "completed";
-      session.stoppedAt = new Date().toISOString();
-      session.lastHeartbeatAtMs = undefined;
-    }
-
-    return this.toPublicSession(session);
-  }
-
-  getSessionById(sessionId: string): WatchSessionRecord | undefined {
-    const session = this.sessions.find(
-      (record) => record.sessionId === sessionId
-    );
-    return session ? this.toPublicSession(session) : undefined;
-  }
-
-  private accrueServerElapsedTime(
-    session: StoredWatchSession,
-    now: number
+  private validateAccessToken(
+    session: WatchSessionDocument,
+    accessToken: string
   ): boolean {
-    const previousHeartbeat = session.lastHeartbeatAtMs;
-    if (previousHeartbeat === undefined) {
-      throw new Error("Session heartbeat state is missing.");
-    }
-
-    const elapsedMs = Math.max(0, now - previousHeartbeat);
-    const acceptedElapsedMs = Math.min(elapsedMs, MAX_HEARTBEAT_GAP_MS);
-    session.lastHeartbeatAtMs = now;
-    session.billableMilliseconds += acceptedElapsedMs;
-
-    const chargeMicros = this.calculateSessionChargeMicros(session);
-    const capMicros = parseUnits(session.maxCharge, 6);
-    if (chargeMicros >= capMicros) {
-      session.charge = session.maxCharge;
-      session.status = "capped";
-      session.stoppedAt = new Date(now).toISOString();
-      session.lastHeartbeatAtMs = undefined;
-      return true;
-    }
-
-    session.charge = formatUnits(chargeMicros, 6);
-    return false;
+    if (!session.accessTokenHash) return false;
+    const tokenHash = createHash("sha256").update(accessToken).digest("hex");
+    return timingSafeEqual(
+      Buffer.from(session.accessTokenHash),
+      Buffer.from(tokenHash)
+    );
   }
 
-  private calculateSessionChargeMicros(session: StoredWatchSession): bigint {
-    const rateMicros = parseUnits(session.ratePerMinute.toFixed(6), 6);
-    return (rateMicros * BigInt(session.billableMilliseconds)) / 60_000n;
-  }
-
-  private getAuthorizedSession(
+  async startSession(
     sessionId: string,
     accessToken: string
-  ): StoredWatchSession {
-    const session = this.sessions.find(
-      (record) => record.sessionId === sessionId
+  ): Promise<WatchSessionRecord> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) throw new Error("Session not found.");
+    if (!this.validateAccessToken(session, accessToken)) {
+      throw new Error("Invalid watch session token");
+    }
+    if (session.status !== "authorized") {
+      throw new Error(`Cannot start session in status: ${session.status}`);
+    }
+
+    const stream = await this.getStreamById(session.streamId);
+    if (!stream) throw new Error("Stream not found.");
+    if (stream.status !== "live") {
+      throw new Error(
+        "Cannot start a watch session for a stream that is not live."
+      );
+    }
+
+    session.status = "paused";
+    session.startedAt = new Date();
+    session.lastHeartbeatAt = new Date();
+    await session.save();
+
+    return this.mapSession(session);
+  }
+
+  async restoreSession(
+    sessionId: string,
+    accessToken: string
+  ): Promise<WatchSessionRecord> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) throw new Error("Session not found.");
+    if (!this.validateAccessToken(session, accessToken)) {
+      throw new Error("Invalid watch session token");
+    }
+    if (session.status === "playing") {
+      this.consumePrepaidTime(session, new Date());
+      session.status = "paused";
+      session.lastHeartbeatAt = new Date();
+      await session.save();
+    }
+
+    return this.mapSession(session);
+  }
+
+  async heartbeatSession(
+    sessionId: string,
+    accessToken: string
+  ): Promise<WatchSessionRecord> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) throw new Error("Session not found.");
+    if (!this.validateAccessToken(session, accessToken)) {
+      throw new Error("Invalid watch session token");
+    }
+    if (session.status !== "playing") {
+      throw new Error(`Cannot heartbeat session in status: ${session.status}`);
+    }
+
+    this.consumePrepaidTime(session, new Date());
+    await session.save();
+
+    return this.mapSession(session);
+  }
+
+  async pauseSession(
+    sessionId: string,
+    accessToken: string
+  ): Promise<WatchSessionRecord> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) throw new Error("Session not found.");
+    if (!this.validateAccessToken(session, accessToken)) {
+      throw new Error("Invalid watch session token");
+    }
+    if (session.status !== "playing") {
+      throw new Error(`Cannot pause session in status: ${session.status}`);
+    }
+
+    this.consumePrepaidTime(session, new Date());
+    session.status = "paused";
+
+    await session.save();
+
+    return this.mapSession(session);
+  }
+
+  async resumeSession(
+    sessionId: string,
+    accessToken: string
+  ): Promise<WatchSessionRecord> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) throw new Error("Session not found.");
+    if (!this.validateAccessToken(session, accessToken)) {
+      throw new Error("Invalid watch session token");
+    }
+    if (session.status !== "paused") {
+      throw new Error(`Cannot resume session in status: ${session.status}`);
+    }
+
+    session.status = "playing";
+    session.lastHeartbeatAt = new Date();
+    await session.save();
+
+    return this.mapSession(session);
+  }
+
+  async stopSession(
+    sessionId: string,
+    accessToken: string
+  ): Promise<WatchSessionRecord> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) throw new Error("Session not found.");
+    if (!this.validateAccessToken(session, accessToken)) {
+      throw new Error("Invalid watch session token");
+    }
+    if (session.status !== "playing" && session.status !== "paused") {
+      throw new Error(`Cannot stop session in status: ${session.status}`);
+    }
+    if (session.status === "playing") {
+      this.consumePrepaidTime(session, new Date());
+    }
+    session.status = "completed";
+    session.stoppedAt = new Date();
+    await session.save();
+
+    return this.mapSession(session);
+  }
+
+  async recordWatchBlock(
+    sessionId: string,
+    paidAmount: string,
+    blockSeconds: number,
+    transaction?: string,
+    network?: string
+  ): Promise<WatchSessionRecord> {
+    const session = await this.sessionModel.findOne({ sessionId }).exec();
+    if (!session) throw new Error("Session not found.");
+
+    if (session.status !== "playing" && session.status !== "paused") {
+      throw new Error(
+        `Cannot record payment for session in status: ${session.status}`
+      );
+    }
+    if ((session.prepaidSeconds ?? 0) > 0) {
+      throw new Error("The current prepaid viewing block has not been used.");
+    }
+
+    const amount = parseUnits(paidAmount, 6);
+    if (amount <= 0n || !Number.isInteger(blockSeconds) || blockSeconds <= 0) {
+      throw new Error("paidAmount must be a positive USDC amount.");
+    }
+
+    const stream = await this.getStreamById(session.streamId);
+    if (!stream) throw new Error("Stream not found.");
+    if (stream.status !== "live") {
+      throw new Error("Cannot buy viewing time for a stream that is not live.");
+    }
+    const quote = quoteWatchBlock(stream.ratePerMinute, blockSeconds);
+    if (
+      blockSeconds !== quote.seconds ||
+      amount !== parseUnits(quote.amount, 6)
+    ) {
+      throw new Error("Payment does not match the next viewing block.");
+    }
+
+    const newCharge = parseUnits(session.charge, 6) + amount;
+
+    session.prepaidSeconds = (session.prepaidSeconds ?? 0) + blockSeconds;
+    session.charge = formatUnits(newCharge, 6);
+    session.status = "paused";
+    session.lastHeartbeatAt = new Date();
+    await session.save();
+
+    await this.gatewayReceiptModel.create({
+      receiptId: randomUUID(),
+      sessionId: session.sessionId,
+      streamId: session.streamId,
+      viewerWallet: session.viewerWallet,
+      creatorWallet: stream.creatorWallet,
+      amount: formatUnits(amount, 6),
+      transaction,
+      network,
+    });
+
+    return this.mapSession(session);
+  }
+
+  private consumePrepaidTime(session: WatchSessionDocument, now: Date): void {
+    const lastHeartbeat = session.lastHeartbeatAt ?? session.startedAt ?? now;
+    const elapsedSeconds = Math.min(
+      Math.floor((now.getTime() - lastHeartbeat.getTime()) / 1000),
+      session.prepaidSeconds ?? 0
     );
-    if (!session) {
-      throw new Error("Watch session not found.");
-    }
+    if (elapsedSeconds <= 0) return;
+    const consumedSeconds = Math.min(
+      Math.max(elapsedSeconds, 0),
+      session.prepaidSeconds ?? 0
+    );
+    session.secondsWatched += consumedSeconds;
+    session.prepaidSeconds = Math.max(
+      (session.prepaidSeconds ?? 0) - consumedSeconds,
+      0
+    );
+    session.lastHeartbeatAt = new Date(
+      lastHeartbeat.getTime() + consumedSeconds * 1000
+    );
 
-    const expectedHash = Buffer.from(session.controlTokenHash, "hex");
-    const providedHash = Buffer.from(this.hashToken(accessToken), "hex");
-    if (!timingSafeEqual(expectedHash, providedHash)) {
-      throw new Error("Invalid watch session token.");
+    if (session.prepaidSeconds === 0) {
+      session.lastHeartbeatAt = now;
+      session.status = "paused";
     }
-
-    return session;
   }
 
-  private hashToken(accessToken: string): string {
-    return createHash("sha256").update(accessToken).digest("hex");
-  }
-
-  private toPublicSession(session: StoredWatchSession): WatchSessionRecord {
-    const {
-      controlTokenHash: _controlTokenHash,
-      lastHeartbeatAtMs: _lastHeartbeatAtMs,
-      ...publicSession
-    } = session;
-    return { ...publicSession };
+  private mapSession(session: WatchSessionDocument): WatchSessionRecord {
+    return {
+      sessionId: session.sessionId,
+      streamId: session.streamId,
+      viewerWallet: session.viewerWallet,
+      authorizationHash: session.authorizationHash,
+      createdAt: session.createdAt.toISOString(),
+      status: session.status,
+      secondsWatched: session.secondsWatched,
+      prepaidSeconds: session.prepaidSeconds ?? 0,
+      charge: session.charge,
+      startedAt: session.startedAt?.toISOString(),
+      stoppedAt: session.stoppedAt?.toISOString(),
+      lastHeartbeatAt: session.lastHeartbeatAt?.toISOString(),
+    };
   }
 }

@@ -8,13 +8,9 @@ Prawr is a decentralized micropayment streaming MVP built on Arc. The project is
 
 ## Current status
 
-This repository is the initial implementation scaffold for Phase 1 and the early architecture baseline. It includes:
+The Arc Testnet MVP currently supports Mongo-backed stream discovery, creator stream management, Twitch and YouTube embeds, HLS (`.m3u8`), and direct MP4/WebM playback. Wallet-signed session caps, per-second Circle Gateway x402 payments during active playback, and persisted payment receipts apply to all supported player types. Creator summaries read those receipts, and Gateway payments are addressed to the stream creator's wallet.
 
-- Arc-first project structure
-- backend service skeleton
-- frontend app skeleton
-- contract skeleton for settlement logic
-- project docs and architecture notes
+Video hosting and live ingest are not implemented. Creators provide a public Twitch or YouTube URL, an HLS playlist URL, or a direct MP4/WebM URL. HLS hosts must permit cross-origin playback from the Prawr frontend, and Twitch/YouTube content must allow embedding. The player pauses metering while paused or buffering. The settlement contract remains scaffolding; Gateway receipts are not rolled into contract payouts.
 
 ## Getting started
 
@@ -24,56 +20,49 @@ npm run dev:backend
 npm run dev:frontend
 ```
 
-## Arc network setup
+## Arc Testnet setup
 
-The frontend defaults to Arc Testnet (chain ID `5042002`) and can be switched
-to Arc Mainnet (chain ID `5042`) with the guarded settings below. Before using
-the wallet or deploying the settlement contract, copy the app examples and fill
-in your local values:
+The frontend wallet targets Arc Testnet (chain ID `5042002`). Before using the
+wallet or deploying the settlement contract, copy the app examples and fill in
+your local values:
 
 ```powershell
+Copy-Item backend/.env.example backend/.env
 Copy-Item frontend/.env.example frontend/.env
 Copy-Item contracts/.env.example contracts/.env
 ```
 
+Start MongoDB locally or set `MONGODB_URI` in `backend/.env`. Nest loads this
+file through `ConfigModule`; the API defaults to port `3001`.
+
 `frontend/.env` is read by Next.js. Set these values there:
 
-- `NEXT_PUBLIC_ARC_NETWORK` selects `arcTestnet` or `arc`; it defaults to
-  Testnet. To enable Mainnet, also set `NEXT_PUBLIC_ALLOW_MAINNET=true`.
-- `NEXT_PUBLIC_ENABLE_SESSION_ESCROW` is a Testnet-only development switch. It
-  defaults to `false`; only enable it after deploying the escrow contract to
-  Arc Testnet. Mainnet escrow writes are intentionally disabled until backend
-  metering, finalization, reconciliation, and security review are complete.
-- `NEXT_PUBLIC_ARC_RPC_URL` overrides the RPC for the selected network. Without
-  an override, the app uses `https://rpc.testnet.arc.io` on Testnet and
-  `https://rpc.mainnet.arc.io` on Mainnet.
+- `NEXT_PUBLIC_SITE_URL` is the public HTTPS origin of the deployed frontend.
+  Set it to the production domain so canonical metadata and the sitemap use
+  the correct host; do not leave the example value in a deployment.
+- `NEXT_PUBLIC_ARC_RPC_URL` is the public Arc Testnet RPC used by wagmi/viem.
+  The default is `https://rpc.testnet.arc.io`; use a provider URL instead if
+  you have one.
 - `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is the project ID for WalletConnect
   wallet discovery. Create one in the [Reown dashboard](https://dashboard.reown.com/).
-- `NEXT_PUBLIC_PRAWR_SETTLEMENT_ADDRESS_ARC_TESTNET` and
-  `NEXT_PUBLIC_PRAWR_SETTLEMENT_ADDRESS_ARC` are separate deployed contract
-  addresses. Writes remain disabled until the selected network has a valid
-  contract address and bytecode.
+- `NEXT_PUBLIC_PRAWR_SETTLEMENT_ADDRESS` is the deployed Prawr settlement
+  contract address. Leave it empty until deployment; payout actions stay
+  disabled without it.
 - `NEXT_PUBLIC_API_BASE_URL` points the frontend to the NestJS API.
+
+Set `GATEWAY_API_KEY` and the optional fallback recipient in `backend/.env`,
+with `GATEWAY_FACILITATOR_URL=https://gateway-api-testnet.circle.com`. Keep
+Circle credentials server-side; never use a `NEXT_PUBLIC_` variable for a
+secret. Gateway payments are sent to each stream's `creatorWallet`, so create a
+test stream with the connected creator wallet address.
 
 `contracts/.env` is used only when deploying from the contracts directory with
 Arc Foundry:
 
-- `ARC_NETWORK` must be `arcTestnet` or `arc`; the deployment script checks the
-  RPC chain ID matches the selected network.
-- `ALLOW_MAINNET` must be set to `true` to deploy to Arc Mainnet. Leave it
-  `false` for development.
 - `ARC_TESTNET_RPC_URL` is the endpoint used to deploy and query Arc Testnet.
-- `ARC_MAINNET_RPC_URL` is the endpoint used to deploy and query Arc Mainnet.
-- `ARC_TESTNET_PRIVATE_KEY` is the key for a dedicated, disposable Testnet
-  deployer wallet. Generate it with `arc-cast wallet new`; never reuse it on
-  Mainnet or commit it.
-- `ARC_MAINNET_PRIVATE_KEY` is separate and should only be added to a protected
-  deployment environment for an explicitly approved Mainnet deployment. Do not
-  copy the Testnet key into this variable.
-- `SETTLEMENT_OPERATOR` is the address of the Circle Developer-Controlled EOA
-  that the backend will use to finalize capped sessions. It is set as an
-  immutable contract operator at deployment; it can be different from the
-  deployer wallet. The current backend does not yet submit these transactions.
+- `PRIVATE_KEY` is the private key for a dedicated, disposable testnet deployer
+  wallet. Generate a new key with `arc-cast wallet new`; never use a mainnet
+  wallet key, commit this value, or send it to the browser.
 - `PRAWR_SETTLEMENT_ADDRESS` records the deployment output for your own notes.
   The deploy command does not consume it.
 
@@ -89,30 +78,26 @@ From `contracts/`, load the local settings and deploy:
 set -a
 source .env
 set +a
-if [ "$ARC_NETWORK" = "arc" ]; then
-  RPC_URL="$ARC_MAINNET_RPC_URL"
-else
-  RPC_URL="$ARC_TESTNET_RPC_URL"
-fi
 arc-forge test --network arc
 arc-forge script script/DeployPrawrSettlement.s.sol:DeployPrawrSettlement \
-	--rpc-url "$RPC_URL" \
+	--rpc-url "$ARC_TESTNET_RPC_URL" \
+	--private-key "$PRIVATE_KEY" \
 	--broadcast
 ```
 
-Copy the `Deployed to` address from the output into the matching network address
-variable in `frontend/.env`, then restart the frontend so Next.js includes the
-value. Confirm the deployment on the selected Arc explorer.
+Copy the `Deployed to` address from the output into
+`frontend/.env` as `NEXT_PUBLIC_PRAWR_SETTLEMENT_ADDRESS`, then restart the
+frontend so Next.js includes the value. Confirm the deployment on the [Arc
+Testnet Explorer](https://explorer.testnet.arc.io/).
 
-The backend now meters elapsed time from server-received heartbeats, excludes
-paused time, caps accepted heartbeat gaps at 30 seconds, and stops at the signed
-session cap. Session state and access tokens are in memory and reset on restart.
-Heartbeats are client signals, not proof that video played; the backend does not
-yet verify escrow funding onchain, persist sessions, or submit finalization
-transactions. The public arbitrary receipt-creation endpoint remains disabled.
-Do not enable escrow funding for real funds. The Arc settings in
-`backend/.env.example` are placeholders; the backend does not yet load `.env`
-files or submit chain transactions.
+Connect the creator wallet in `/creator` and use **Create Stream** to save a
+title, category, rate, and publicly reachable Twitch, YouTube, HLS, MP4, or
+WebM playback URL. The
+homepage and watch route then use the Mongo-backed stream ID. Each successful
+Gateway-paid second while the video is playing creates a receipt in MongoDB.
+This is testnet code only and has not been validated with live Circle
+credentials; use testnet funds only. The Arc contract deployment settings are
+separate and do not participate in the current Gateway watch flow.
 
 ## Architecture highlights
 
@@ -120,9 +105,8 @@ files or submit chain transactions.
 - Creator dashboard under /creator
 - Protected stream access and monetization flow
 - Arc USDC settlement compatibility
-- Viewer-funded capped Arc session escrow
-- Circle Gateway Nanopayments remains a possible rail for discrete paid resources, not streaming session settlement
-- Durable session state, playback verification, escrow-funding verification, and operator finalization remain unfinished
+- Circle Gateway Nanopayments preferred for batched micropayments
+- Server-side metering and receipt validation for correctness
 
 ## Documentation
 

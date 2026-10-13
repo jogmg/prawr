@@ -3,29 +3,32 @@
 @tailwind utilities;
 
 :root {
-  --background: #06121d;
-  --panel: rgba(13, 23, 34, 0.92);
-  --panel-border: rgba(148, 163, 184, 0.2);
-  --text: #e2e8f0;
-  --muted: #9fb3c8;
-  --brand: #1e88ff;
-  --brand-strong: #1565c0;
+  color-scheme: dark;
+  --background: #1c1f1e;
+  --surface: #242827;
+  --surface-raised: #2b302e;
+  --panel-border: #3a403d;
+  --text: #eeeeff;
+  --muted: #b0b5b2;
+  --brand: #a27035;
+  --brand-hover: #b88b4a;
+  --action: #ddca7d;
+  --danger: #e58f88;
+  --success: #8ec5a0;
 }
 
 html {
   scroll-behavior: smooth;
+  background: var(--background);
 }
 
 body {
   margin: 0;
-  background: radial-gradient(
-      circle at top,
-      rgba(30, 136, 255, 0.18),
-      transparent 25%
-    ),
-    linear-gradient(180deg, #06121d 0%, #0c1725 100%);
+  background: var(--background);
   color: var(--text);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: "Aptos", "Segoe UI Variable", "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 * {
@@ -36,13 +39,70 @@ a {
   text-decoration: none;
 }
 
+.prawr-toaster {
+  --normal-bg: var(--surface);
+  --normal-text: var(--text);
+  --normal-border: var(--panel-border);
+  --success-bg: #20392b;
+  --success-text: #c5e8d0;
+  --success-border: #548966;
+  --info-bg: #30291d;
+  --info-text: #f0dfad;
+  --info-border: var(--brand);
+  --warning-bg: #3a301d;
+  --warning-text: #f4dda0;
+  --warning-border: #aa8541;
+  --error-bg: #3b2425;
+  --error-text: #f2c2bf;
+  --error-border: #a95755;
+  --border-radius: 4px;
+}
+
+.prawr-toaster [data-sonner-toast] button[data-button] {
+  border-color: var(--brand-hover);
+  background: var(--brand);
+  color: var(--text);
+}
+
+.prawr-toaster [data-sonner-toast] button[data-button]:hover {
+  background: var(--brand-hover);
+}
+
 .card {
-  background: rgba(15, 23, 42, 0.75);
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 20px;
-  backdrop-filter: blur(8px);
+  background: var(--surface);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
 }
 
 button {
   cursor: pointer;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--action);
+  outline-offset: 3px;
+}
+
+input,
+select {
+  color-scheme: dark;
+}
+
+::selection {
+  background: var(--action);
+  color: var(--background);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

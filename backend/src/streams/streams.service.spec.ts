@@ -1,149 +1,127 @@
-import {
-  generatePrivateKey,
-  privateKeyToAccount,
-  signMessage,
-} from "viem/accounts";
-import { StreamsService } from "./streams.service";
+jest.mock("@nestjs/mongoose", () => ({
+  InjectModel: () => () => undefined,
+}));
+jest.mock("../gateway/gateway-receipt.schema", () => ({
+  GatewayReceipt: { name: "GatewayReceipt" },
+}));
 
-const creatorWallet = "0x1111111111111111111111111111111111111111";
+import { SettlementService } from "../settlement/settlement.service";
 
-describe("StreamsService", () => {
-  afterEach(() => {
-    jest.useRealTimers();
+describe("SettlementService - Unit Tests", () => {
+  let service: SettlementService;
+
+  beforeEach(() => {
+    service = new SettlementService();
   });
 
-  it("creates a stream with a valid rate and live status", () => {
-    const service = new StreamsService();
-
-    const stream = service.createStream({
-      title: "Arc market briefing",
-      creatorId: "creator_123",
-      creatorWallet,
-      category: "Finance",
-      ratePerMinute: 0.02,
-      status: "live",
+  it("builds authorization message correctly", () => {
+    const message = service.buildAuthorizationMessage({
+      streamId: "test_stream",
+      viewerWallet: "0x1234567890123456789012345678901234567890",
+      issuedAt: "2026-10-03T00:00:00.000Z",
     });
 
-    expect(stream.id).toBeTruthy();
-    expect(stream.ratePerMinute).toBe(0.02);
-    expect(stream.status).toBe("live");
-  });
-
-  it("creates a watch session tied to the stream creator and cap", async () => {
-    const service = new StreamsService();
-    const stream = createTestStream(service);
-    const session = await createAuthorizedSession(service, stream.id, "2");
-
-    expect(session.sessionId).toBeTruthy();
-    expect(session.maxCharge).toBe("2");
-    expect(session.streamId).toBe(stream.id);
-    expect(session.creatorWallet).toBe(creatorWallet);
-    expect(session.ratePerMinute).toBe(0.02);
-    expect(session.status).toBe("authorized");
-    expect(session.accessToken).toBeTruthy();
-  });
-
-  it("derives usage from server time and excludes paused time", async () => {
-    jest.useFakeTimers().setSystemTime(new Date("2026-10-03T00:00:00.000Z"));
-    const service = new StreamsService();
-    const stream = createTestStream(service);
-    const session = await createAuthorizedSession(service, stream.id, "0.02");
-
-    service.startSession(session.sessionId, session.accessToken);
-    jest.advanceTimersByTime(15_000);
-    const firstHeartbeat = service.heartbeatSession(
-      session.sessionId,
-      session.accessToken
+    expect(message).toContain("Prawr session authorization");
+    expect(message).toContain("Stream: test_stream");
+    expect(message).toContain(
+      "Viewer: 0x1234567890123456789012345678901234567890"
     );
-    expect(firstHeartbeat.billableMilliseconds).toBe(15_000);
-    expect(firstHeartbeat.charge).toBe("0.005");
-
-    jest.advanceTimersByTime(15_000);
-    const paused = service.pauseSession(session.sessionId, session.accessToken);
-    expect(paused.status).toBe("paused");
-    expect(paused.billableMilliseconds).toBe(30_000);
-    expect(paused.charge).toBe("0.01");
-
-    jest.advanceTimersByTime(60_000);
-    service.resumeSession(session.sessionId, session.accessToken);
-    jest.advanceTimersByTime(30_000);
-    const stopped = service.stopSession(session.sessionId, session.accessToken);
-
-    expect(stopped.status).toBe("capped");
-    expect(stopped.billableMilliseconds).toBe(60_000);
-    expect(stopped.charge).toBe("0.02");
+    expect(message).not.toContain("Max charge");
+    expect(message).toContain("Issued at: 2026-10-03T00:00:00.000Z");
   });
 
-  it("caps a missed heartbeat interval and never charges above authorization", async () => {
-    jest.useFakeTimers().setSystemTime(new Date("2026-10-03T00:00:00.000Z"));
-    const service = new StreamsService();
-    const stream = createTestStream(service);
-    const session = await createAuthorizedSession(service, stream.id, "0.01");
+  it("calculates charge correctly", () => {
+    const charge = service.calculateCharge({
+      ratePerMinute: 0.02,
+      secondsWatched: 60,
+    });
 
-    service.startSession(session.sessionId, session.accessToken);
-    jest.advanceTimersByTime(2 * 60_000);
-    const metered = service.heartbeatSession(
-      session.sessionId,
-      session.accessToken
+    expect(charge).toBe("0.02");
+  });
+
+  it("calculates cumulative charge without imposing a session limit", () => {
+    const charge = service.calculateCharge({
+      ratePerMinute: 0.02,
+      secondsWatched: 6_000,
+    });
+
+    expect(charge).toBe("2");
+  });
+
+  it("creates a receipt with valid input", () => {
+    const receipt = service.createReceipt({
+      sessionId: "session_123",
+      streamId: "stream_123",
+      viewerWallet: "0x1111111111111111111111111111111111111111",
+      creatorWallet: "0x2222222222222222222222222222222222222222",
+      charge: "0.02",
+    });
+
+    expect(receipt.receiptId).toBeTruthy();
+    expect(receipt.sessionId).toBe("session_123");
+    expect(receipt.streamId).toBe("stream_123");
+    expect(receipt.viewerWallet).toBe(
+      "0x1111111111111111111111111111111111111111"
+    );
+    expect(receipt.creatorWallet).toBe(
+      "0x2222222222222222222222222222222222222222"
+    );
+    expect(receipt.charge).toBe("0.02");
+    expect(receipt.createdAt).toBeTruthy();
+  });
+
+  it("creates a payout claim", () => {
+    const claim = service.createPayoutClaim(
+      "0x1111111111111111111111111111111111111111",
+      "1.75"
     );
 
-    expect(metered.status).toBe("capped");
-    expect(metered.billableMilliseconds).toBe(30_000);
-    expect(metered.charge).toBe("0.01");
+    expect(claim.claimId).toBeTruthy();
+    expect(claim.creatorWallet).toBe(
+      "0x1111111111111111111111111111111111111111"
+    );
+    expect(claim.amount).toBe("1.75");
+    expect(claim.status).toBe("pending");
   });
 
-  it("rejects invalid session tokens and duplicate starts", async () => {
-    const service = new StreamsService();
-    const stream = createTestStream(service);
-    const session = await createAuthorizedSession(service, stream.id, "1");
+  it("finalizes a payout claim", () => {
+    const claim = service.createPayoutClaim(
+      "0x1111111111111111111111111111111111111111",
+      "1.75"
+    );
 
-    expect(() =>
-      service.startSession(session.sessionId, "wrong-token")
-    ).toThrow("Invalid watch session token");
-    service.startSession(session.sessionId, session.accessToken);
-    expect(
-      service.startSession(session.sessionId, session.accessToken).status
-    ).toBe("playing");
+    const executedClaim = service.finalizePayoutClaim(
+      "0x1111111111111111111111111111111111111111",
+      claim.claimId
+    );
+
+    expect(executedClaim.status).toBe("claimed");
+    expect(executedClaim.claimId).toBe(claim.claimId);
+  });
+
+  it("aggregates creator payout summary", async () => {
+    const creatorWallet = "0x1111111111111111111111111111111111111111";
+
+    service.createReceipt({
+      sessionId: "session_1",
+      streamId: "stream_1",
+      viewerWallet: "0x2222222222222222222222222222222222222222",
+      creatorWallet,
+      charge: "0.5",
+    });
+
+    service.createReceipt({
+      sessionId: "session_2",
+      streamId: "stream_2",
+      viewerWallet: "0x3333333333333333333333333333333333333333",
+      creatorWallet,
+      charge: "1.25",
+    });
+
+    const totals = await service.getCreatorPayoutSummary(creatorWallet);
+
+    expect(totals.totalReceived).toBe("1.75");
+    expect(totals.receiptCount).toBe(2);
+    expect(totals.receipts.length).toBe(2);
   });
 });
-
-function createTestStream(service: StreamsService) {
-  return service.createStream({
-    title: "Arc market briefing",
-    creatorId: "creator_123",
-    creatorWallet,
-    category: "Finance",
-    ratePerMinute: 0.02,
-    status: "live",
-  });
-}
-
-async function createAuthorizedSession(
-  service: StreamsService,
-  streamId: string,
-  maxCharge: string
-) {
-  const privateKey = generatePrivateKey();
-  const account = privateKeyToAccount(privateKey);
-  const issuedAt = new Date().toISOString();
-  const authorizationMessage = service[
-    "settlementService"
-  ].buildAuthorizationMessage({
-    streamId,
-    viewerWallet: account.address,
-    maxCharge,
-    issuedAt,
-  });
-  const authorizationHash = await signMessage({
-    privateKey,
-    message: authorizationMessage,
-  });
-
-  return service.createSession({
-    streamId,
-    viewerWallet: account.address,
-    maxCharge,
-    authorizationHash,
-    issuedAt,
-  });
-}

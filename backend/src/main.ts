@@ -1,5 +1,5 @@
-import { NestFactory } from "@nestjs/core";
 import { ValidationPipe } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 
 async function bootstrap() {
@@ -12,7 +12,10 @@ async function bootstrap() {
     })
   );
 
-  app.enableCors();
+  app.enableCors({
+    exposedHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE"],
+  });
+
   await app.listen(process.env.PORT ?? 3001);
 }
 

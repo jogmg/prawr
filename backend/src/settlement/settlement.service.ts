@@ -1,15 +1,16 @@
-import { Injectable } from "@nestjs/common";
+﻿import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { InjectModel } from "@nestjs/mongoose";
+import type { Model } from "mongoose";
 import { recoverMessageAddress } from "viem";
+import {
+  GatewayReceipt,
+  type GatewayReceiptDocument,
+} from "../gateway/gateway-receipt.schema";
 
 export interface CalculateChargeInput {
   ratePerMinute: number;
   secondsWatched: number;
-}
-
-export interface ValidateAuthorizationCapInput {
-  ratePerMinute: number;
-  secondsWatched: number;
-  maxCharge: string;
 }
 
 export interface CreateReceiptInput {
@@ -18,6 +19,8 @@ export interface CreateReceiptInput {
   viewerWallet: string;
   creatorWallet: string;
   charge: string;
+  transaction?: string;
+  network?: string;
 }
 
 export interface ReceiptRecord {
@@ -27,13 +30,14 @@ export interface ReceiptRecord {
   viewerWallet: string;
   creatorWallet: string;
   charge: string;
+  transaction?: string;
+  network?: string;
   createdAt: string;
 }
 
 export interface SessionAuthorizationInput {
   streamId: string;
   viewerWallet: string;
-  maxCharge: string;
   authorizationHash: string;
   issuedAt?: string;
 }
@@ -46,10 +50,46 @@ export interface PayoutClaimRecord {
   createdAt: string;
 }
 
+export interface GatewayBalanceResponse {
+  wallet: { balance: string; formatted: string };
+  gateway: {
+    available: string;
+    formatted: string;
+    pending: string;
+    formattedPending: string;
+  };
+}
+
+export interface GatewayWithdrawResponse {
+  success: boolean;
+  mintTxHash?: string;
+  amount?: string;
+}
+
+/**
+ * Circle Gateway balance shape returned by the SDK's getBalances() (bigint values)
+ * or a serialized version of it (string values).
+ */
+export interface GatewaySdkBalances {
+  wallet: { balance: bigint | string; formatted: string };
+  gateway: {
+    total: bigint | string;
+    available: bigint | string;
+    formattedTotal?: string;
+    formattedAvailable?: string;
+  };
+}
+
 @Injectable()
 export class SettlementService {
   private readonly receipts: ReceiptRecord[] = [];
   private readonly payoutClaims: PayoutClaimRecord[] = [];
+
+  constructor(
+    @InjectModel(GatewayReceipt.name)
+    private readonly gatewayReceiptModel?: Model<GatewayReceiptDocument>,
+    private readonly configService?: ConfigService
+  ) {}
 
   validateWalletAddress(address: string, label: string): void {
     if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
@@ -60,12 +100,10 @@ export class SettlementService {
   buildAuthorizationMessage({
     streamId,
     viewerWallet,
-    maxCharge,
     issuedAt,
   }: {
     streamId: string;
     viewerWallet: string;
-    maxCharge: string;
     issuedAt?: string;
   }): string {
     const timestamp = issuedAt
@@ -76,7 +114,6 @@ export class SettlementService {
       "Prawr session authorization",
       `Stream: ${streamId}`,
       `Viewer: ${viewerWallet}`,
-      `Max charge: ${maxCharge} USDC`,
       `Issued at: ${timestamp}`,
     ].join("\n");
   }
@@ -84,7 +121,6 @@ export class SettlementService {
   async verifySessionAuthorization({
     streamId,
     viewerWallet,
-    maxCharge,
     authorizationHash,
     issuedAt,
   }: SessionAuthorizationInput): Promise<boolean> {
@@ -94,10 +130,6 @@ export class SettlementService {
 
     this.validateWalletAddress(viewerWallet, "viewer");
 
-    if (!maxCharge || Number(maxCharge) <= 0) {
-      throw new Error("maxCharge must be a positive decimal string");
-    }
-
     if (!authorizationHash?.trim()) {
       throw new Error("authorizationHash is required");
     }
@@ -106,7 +138,6 @@ export class SettlementService {
     const message = this.buildAuthorizationMessage({
       streamId,
       viewerWallet,
-      maxCharge,
       issuedAt: normalizedIssuedAt,
     });
 
@@ -153,31 +184,14 @@ export class SettlementService {
     );
   }
 
-  validateAuthorizationCap({
-    ratePerMinute,
-    secondsWatched,
-    maxCharge,
-  }: ValidateAuthorizationCapInput): string {
-    const charge = this.calculateCharge({ ratePerMinute, secondsWatched });
-    const maxChargeValue = Number(maxCharge);
-
-    if (!Number.isFinite(maxChargeValue) || maxChargeValue <= 0) {
-      throw new Error("maxCharge must be a positive numeric string");
-    }
-
-    if (Number(charge) > maxChargeValue) {
-      throw new Error("Session charge exceeds the authorization cap");
-    }
-
-    return charge;
-  }
-
   createReceipt({
     sessionId,
     streamId,
     viewerWallet,
     creatorWallet,
     charge,
+    transaction,
+    network,
   }: CreateReceiptInput): ReceiptRecord {
     if (!sessionId || !streamId) {
       throw new Error("sessionId and streamId are required");
@@ -200,6 +214,8 @@ export class SettlementService {
       viewerWallet,
       creatorWallet,
       charge: Number(amount).toFixed(6).replace(/0+$/, "").replace(/\.$/, ""),
+      transaction,
+      network,
       createdAt: new Date().toISOString(),
     };
 
@@ -268,21 +284,44 @@ export class SettlementService {
     return { ...this.payoutClaims[claimIndex] };
   }
 
-  getCreatorPayoutSummary(creatorWallet: string): {
+  async getCreatorPayoutSummary(creatorWallet: string): Promise<{
     creatorWallet: string;
     totalReceived: string;
     receiptCount: number;
     receipts: ReceiptRecord[];
     pendingClaims: PayoutClaimRecord[];
-  } {
+  }> {
     this.validateWalletAddress(creatorWallet, "creator");
 
-    const receipts = this.receipts
-      .filter(
-        (receipt) =>
-          receipt.creatorWallet.toLowerCase() === creatorWallet.toLowerCase()
-      )
-      .map((receipt) => ({ ...receipt }));
+    const persistedReceipts = this.gatewayReceiptModel
+      ? await this.gatewayReceiptModel
+          .find({
+            creatorWallet: { $regex: `^${creatorWallet}$`, $options: "i" },
+          })
+          .sort({ createdAt: -1 })
+          .exec()
+      : undefined;
+    const receipts = persistedReceipts
+      ? persistedReceipts.map((receipt) => ({
+          receiptId: receipt.receiptId,
+          sessionId: receipt.sessionId,
+          streamId: receipt.streamId,
+          viewerWallet: receipt.viewerWallet,
+          creatorWallet: receipt.creatorWallet,
+          charge: receipt.amount,
+          transaction: receipt.transaction,
+          network: receipt.network,
+          createdAt: new Date(
+            receipt.get("createdAt") as string | Date
+          ).toISOString(),
+        }))
+      : this.receipts
+          .filter(
+            (receipt) =>
+              receipt.creatorWallet.toLowerCase() ===
+              creatorWallet.toLowerCase()
+          )
+          .map((receipt) => ({ ...receipt }));
 
     const pendingClaims = this.payoutClaims
       .filter(
@@ -307,5 +346,124 @@ export class SettlementService {
       receipts,
       pendingClaims,
     };
+  }
+
+  /**
+   * Normalize the GatewayClient.getBalances() result (bigint or string fields)
+   * into the GatewayBalanceResponse shape consumed by the frontend.
+   */
+  private normalizeSdkBalances(
+    balances: GatewaySdkBalances
+  ): GatewayBalanceResponse {
+    const toStr = (value: bigint | string | undefined): string =>
+      value === undefined
+        ? "0"
+        : typeof value === "bigint"
+        ? value.toString()
+        : String(value);
+
+    return {
+      wallet: {
+        balance: toStr(balances.wallet?.balance),
+        formatted: balances.wallet?.formatted ?? "0",
+      },
+      gateway: {
+        available: toStr(balances.gateway?.available),
+        formatted: balances.gateway?.formattedAvailable ?? "0",
+        pending: "0",
+        formattedPending: "0",
+      },
+    };
+  }
+
+  async getGatewayBalances(address: string): Promise<GatewayBalanceResponse> {
+    this.validateWalletAddress(address, "creator");
+
+    const apiKey = this.configService?.get<string>("GATEWAY_API_KEY");
+    const facilitatorUrl = this.configService
+      ?.get<string>("GATEWAY_FACILITATOR_URL", "https://gateway-api.circle.com")
+      .replace(/\/$/, "");
+
+    try {
+      // Circle Gateway balances endpoint (same shape the SDK's
+      // GatewayClient.getBalances() uses under the hood).
+      const response = await fetch(`${facilitatorUrl}/v1/balances`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          token: "USDC",
+          sources: [
+            {
+              depositor: address,
+              // Arc Gateway domain (shared by mainnet and testnet)
+              domain: 26,
+            },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Gateway API error: ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        balances?: Array<{
+          balance?: string;
+          withdrawing?: string;
+          withdrawable?: string;
+        }>;
+      };
+
+      const entry = data.balances?.[0];
+      if (!entry) {
+        // No Gateway balance yet for this depositor — return zeros.
+        return {
+          wallet: { balance: "0", formatted: "0" },
+          gateway: {
+            available: "0",
+            formatted: "0",
+            pending: "0",
+            formattedPending: "0",
+          },
+        };
+      }
+
+      return {
+        wallet: { balance: "0", formatted: "0" },
+        gateway: {
+          available: entry.balance ?? "0",
+          formatted: entry.balance ?? "0",
+          pending: entry.withdrawable ?? "0",
+          formattedPending: entry.withdrawable ?? "0",
+        },
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to load Gateway balances: ${detail}`);
+    }
+  }
+
+  /**
+   * Withdraw from Gateway. The actual withdrawal is signed client-side by the
+   * creator's wallet via GatewayClient.withdraw() — this endpoint only
+   * validates the request and records the payout claim for accounting.
+   */
+  async withdrawFromGateway(
+    creatorWallet: string,
+    amount: string
+  ): Promise<GatewayWithdrawResponse> {
+    this.validateWalletAddress(creatorWallet, "creator");
+
+    const amountValue = Number(amount);
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+      throw new Error("amount must be a positive decimal string");
+    }
+
+    this.createPayoutClaim(creatorWallet, amount);
+
+    return { success: true, amount };
   }
 }
