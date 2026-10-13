@@ -5,6 +5,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
   Req,
   Res,
 } from "@nestjs/common";
@@ -45,7 +46,16 @@ export class StreamsController {
   ) {}
 
   @Get()
-  listStreams() {
+  listStreams(
+    @Query("offset") offsetValue?: string,
+    @Query("limit") limitValue?: string
+  ) {
+    if (offsetValue !== undefined || limitValue !== undefined) {
+      const offset = Math.max(0, Number.parseInt(offsetValue ?? "0", 10) || 0);
+      const requestedLimit = Number.parseInt(limitValue ?? "24", 10) || 24;
+      const limit = Math.min(50, Math.max(1, requestedLimit));
+      return this.streamsService.listStreamsPage(offset, limit);
+    }
     return this.streamsService.listStreams();
   }
 

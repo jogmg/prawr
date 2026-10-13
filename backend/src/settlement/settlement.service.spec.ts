@@ -116,6 +116,9 @@ describe("SettlementService", () => {
     expect(gatewayReceiptModel.find).toHaveBeenCalledWith({
       creatorWallet: { $regex: `^${creatorWallet}$`, $options: "i" },
     });
+    expect(gatewayReceiptModel.find().sort).toHaveBeenCalledWith({
+      createdAt: -1,
+    });
     expect(summary.totalReceived).toBe("0.000333");
     expect(summary.receiptCount).toBe(1);
     expect(summary.receipts[0]).toMatchObject({

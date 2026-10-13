@@ -3,6 +3,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ConnectKitProvider, getDefaultConfig } from "connectkit";
 import { useState } from "react";
+import { Toaster } from "sonner";
 import { arcTestnet } from "viem/chains";
 import { WagmiProvider, createConfig, http } from "wagmi";
 import { createAppQueryClient } from "./lib/queries/query-config";
@@ -30,7 +31,23 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
-        <ConnectKitProvider>{children}</ConnectKitProvider>
+        <ConnectKitProvider
+          mode="dark"
+          customTheme={{
+            "--ck-accent-color": "#a27035",
+            "--ck-accent-text-color": "#ffffff",
+            "--ck-border-radius": 12,
+          }}
+        >
+          {children}
+          <Toaster
+            className="prawr-toaster"
+            position="top-right"
+            richColors
+            closeButton
+            theme="dark"
+          />
+        </ConnectKitProvider>
       </QueryClientProvider>
     </WagmiProvider>
   );

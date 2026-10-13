@@ -298,7 +298,7 @@ export class SettlementService {
           .find({
             creatorWallet: { $regex: `^${creatorWallet}$`, $options: "i" },
           })
-          .sort({ createdAt: 1 })
+          .sort({ createdAt: -1 })
           .exec()
       : undefined;
     const receipts = persistedReceipts

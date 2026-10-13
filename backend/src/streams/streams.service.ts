@@ -57,6 +57,11 @@ export interface StreamRecord {
   createdAt: string;
 }
 
+export interface StreamPage {
+  items: StreamRecord[];
+  nextOffset: number | null;
+}
+
 export interface WatchSessionRecord {
   sessionId: string;
   streamId: string;
@@ -103,7 +108,10 @@ export class StreamsService {
   ) {}
 
   async listStreams(): Promise<StreamRecord[]> {
-    const streams = await this.streamModel.find().exec();
+    const streams = await this.streamModel
+      .find()
+      .sort({ createdAt: -1, _id: -1 })
+      .exec();
     return streams.map((stream) => ({
       id: stream.id,
       title: stream.title,
@@ -115,6 +123,33 @@ export class StreamsService {
       status: stream.status,
       createdAt: stream.createdAt.toISOString(),
     }));
+  }
+
+  async listStreamsPage(offset: number, limit: number): Promise<StreamPage> {
+    const [streams, total] = await Promise.all([
+      this.streamModel
+        .find()
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(offset)
+        .limit(limit)
+        .exec(),
+      this.streamModel.countDocuments().exec(),
+    ]);
+    return {
+      items: streams.map((stream) => ({
+        id: stream.id,
+        title: stream.title,
+        creatorId: stream.creatorId,
+        creatorWallet: stream.creatorWallet,
+        category: stream.category,
+        playbackUrl: stream.playbackUrl,
+        ratePerMinute: stream.ratePerMinute,
+        status: stream.status,
+        createdAt: stream.createdAt.toISOString(),
+      })),
+      nextOffset:
+        offset + streams.length < total ? offset + streams.length : null,
+    };
   }
 
   async getStreamById(id: string): Promise<StreamRecord | undefined> {

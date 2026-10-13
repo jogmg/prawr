@@ -1,8 +1,9 @@
 "use client";
 
-import { ConnectKitButton } from "connectkit";
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import ReactPlayer from "react-player/lazy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { formatUnits } from "viem";
 import {
@@ -12,6 +13,7 @@ import {
   useWalletClient,
 } from "wagmi";
 import { buildSessionAuthorizationMessage } from "../../lib/prawr-api";
+import { shortenWalletAddress } from "../../lib/helpers/wallet";
 import { type GatewayWithdrawalSigner } from "../../lib/gateway-client";
 import type { BatchEvmSigner } from "@circle-fin/x402-batching";
 import { useStream } from "../../lib/hooks/use-stream-queries";
@@ -77,6 +79,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
   const streamQuery = useStream(decodeURIComponent(params.slug));
   const stream = streamQuery.data ?? null;
   const balancesQuery = useWatchGatewayBalances(address);
+  const { isError: balancesFailed, refetch: refetchBalances } = balancesQuery;
   const sessionMutations = useWatchSessionMutations();
   const paidBlockMutation = usePayForWatchBlock();
   const gatewayDeposit = useGatewayDeposit();
@@ -105,6 +108,8 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
   const walletUsdcBalance = balancesQuery.data?.wallet.formatted ?? null;
   const [depositAmount, setDepositAmount] = useState("5");
   const [playbackSeconds, setPlaybackSeconds] = useState(0);
+  const [playerRetry, setPlayerRetry] = useState(0);
+  const [showViewingPanel, setShowViewingPanel] = useState(true);
 
   // Session refs - avoids stale closures inside the pay interval.
   const sessionIdRef = useRef<string | null>(null);
@@ -118,15 +123,40 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
   const restoreTimeRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number | null>(null);
   const playerRef = useRef<ReactPlayer | null>(null);
-  const sessionStorageKey =
+  const watchSessionKey =
     address && stream
       ? `prawr:watch-session:${stream.id}:${address.toLowerCase()}`
       : null;
   const streamNotLive = stream?.status !== "live";
-  const streamError =
-    streamQuery.error instanceof Error
-      ? streamQuery.error.message
-      : "Unable to load stream.";
+  // const streamError =
+  //   streamQuery.error instanceof Error
+  //     ? streamQuery.error.message
+  //     : "Unable to load stream.";
+
+  useEffect(() => {
+    if (!error) return;
+    if (error.includes("Playback could not be loaded") && stream?.playbackUrl) {
+      toast.error(error, {
+        action: {
+          label: "Retry video",
+          onClick: () => setPlayerRetry((attempt) => attempt + 1),
+        },
+      });
+    } else {
+      toast.error(error);
+    }
+    setError(null);
+  }, [error, stream?.playbackUrl]);
+
+  useEffect(() => {
+    if (!balancesFailed) return;
+    toast.warning("Couldn’t load wallet funds.", {
+      action: {
+        label: "Retry",
+        onClick: () => void refetchBalances(),
+      },
+    });
+  }, [balancesFailed, refetchBalances]);
 
   const applyPendingPlaybackTime = () => {
     const player = playerRef.current;
@@ -170,16 +200,16 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
   }, [address, stream]);
 
   useEffect(() => {
-    if (!sessionStorageKey || !stream) {
+    if (!watchSessionKey || !stream) {
       setSavedSession(null);
       return;
     }
-    const saved = readWatchSession(sessionStorageKey, stream.id);
+    const saved = readWatchSession(watchSessionKey, stream.id);
     if (!saved && typeof window !== "undefined") {
-      removeWatchSession(sessionStorageKey);
+      removeWatchSession(watchSessionKey);
     }
     setSavedSession(saved);
-  }, [sessionStorageKey, stream]);
+  }, [watchSessionKey, stream]);
 
   useEffect(() => {
     const session = restoreQuery.data;
@@ -188,7 +218,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
       session.streamId !== stream.id ||
       session.viewerWallet.toLowerCase() !== address.toLowerCase()
     ) {
-      if (sessionStorageKey) removeWatchSession(sessionStorageKey);
+      if (watchSessionKey) removeWatchSession(watchSessionKey);
       setSavedSession(null);
       return;
     }
@@ -204,7 +234,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
     applyPendingPlaybackTime();
 
     if (session.status === "completed" || session.status === "capped") {
-      if (sessionStorageKey) removeWatchSession(sessionStorageKey);
+      if (watchSessionKey) removeWatchSession(watchSessionKey);
       setSessionState("capped");
       return;
     }
@@ -217,7 +247,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
     savedSession,
     stream,
     address,
-    sessionStorageKey,
+    watchSessionKey,
     setAmountCharged,
     setPrepaidSeconds,
     setResumeAvailable,
@@ -263,6 +293,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
     try {
       if (!walletClient) throw new Error("Connect a wallet to deposit.");
       await gatewayDeposit.mutateAsync({ amount: depositAmount, walletClient });
+      toast.success("Funds added to your viewing balance.");
     } catch (err) {
       console.error("Deposit failed", err);
       setError("Deposit failed. Make sure your wallet has testnet USDC.");
@@ -289,6 +320,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
         walletClient,
         signer: gatewaySigner,
       });
+      toast.success("Funds withdrawn to your connected wallet.");
     } catch (err) {
       console.error("Withdrawal failed", err);
       setError(
@@ -339,10 +371,9 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
           serverSessionStatusRef.current = "playing";
         } catch (resumeError) {
           void controlPlayback("pause");
+          console.error("Watch session resume failed", resumeError);
           setError(
-            resumeError instanceof Error
-              ? resumeError.message
-              : "Unable to resume the watch session."
+            "Couldn’t resume playback. Try Play again, or reconnect your wallet if needed."
           );
           return;
         }
@@ -382,9 +413,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
           if (watchIntervalRef.current) clearInterval(watchIntervalRef.current);
           watchIntervalRef.current = null;
           setError(
-            heartbeatError instanceof Error
-              ? heartbeatError.message
-              : "Unable to confirm prepaid viewing time. Playback has been paused."
+            "We couldn’t confirm your remaining viewing time, so playback was paused. Retry when your connection is stable."
           );
           void controlPlayback("pause");
           setSessionState("authorized");
@@ -404,10 +433,10 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
   }) => {
     lastVideoTimeRef.current = playedSeconds;
     setPlaybackSeconds(playedSeconds);
-    if (!sessionStorageKey || !sessionIdRef.current || !accessTokenRef.current)
+    if (!watchSessionKey || !sessionIdRef.current || !accessTokenRef.current)
       return;
 
-    saveWatchSession(sessionStorageKey, {
+    saveWatchSession(watchSessionKey, {
       sessionId: sessionIdRef.current,
       accessToken: accessTokenRef.current,
       playbackTime: playedSeconds,
@@ -418,14 +447,15 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
     applyPendingPlaybackTime();
   };
 
-  const handleTogglePlayback = async () => {
+  const handleResumeSession = async () => {
     if (!playerRef.current) return;
-    if (sessionState === "playing") {
-      await controlPlayback("pause");
-      return;
-    }
-    if (prepaidSecondsRef.current <= 0) {
-      setError("Pay for a viewing block before playing.");
+    if (
+      sessionState !== "authorized" ||
+      !sessionIdRef.current ||
+      !accessTokenRef.current ||
+      prepaidSecondsRef.current <= 0
+    ) {
+      setError("An active session with prepaid time is required to resume.");
       return;
     }
     try {
@@ -438,10 +468,9 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
       }
       await controlPlayback("play");
     } catch (playError) {
+      console.error("Playback start failed", playError);
       setError(
-        playError instanceof Error
-          ? playError.message
-          : "Playback could not start. Press Play to continue."
+        "Playback couldn’t start. Check that the stream is available, then try resuming the session again."
       );
     }
   };
@@ -483,6 +512,12 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
   const handlePayNextBlock = async (blockSeconds: number) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId || !address || prepaidSecondsRef.current > 0) return;
+    if (!stream?.playbackUrl) {
+      setError(
+        "This stream has no available video source. No viewing time was charged."
+      );
+      return;
+    }
 
     setError(null);
     try {
@@ -510,13 +545,13 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
       setResumeAvailable(result.data.prepaidSeconds > 0);
       setShowPayModal(false);
       setError(null);
+      toast.success("Viewing time added.");
       try {
         await controlPlayback("play");
       } catch (playError) {
+        console.error("Playback after payment failed", playError);
         setError(
-          playError instanceof Error
-            ? playError.message
-            : "Block paid. Press Play to start playback."
+          "Payment was completed, but playback didn’t start. Press Play to continue."
         );
       }
       await refreshBlockQuote(sessionId);
@@ -526,9 +561,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
     } catch (paymentError) {
       console.error("Viewing block payment failed", paymentError);
       setError(
-        paymentError instanceof Error
-          ? paymentError.message
-          : "Block payment failed."
+        "Payment wasn’t completed. Check your wallet funds or choose a different viewing duration."
       );
     }
   };
@@ -542,6 +575,12 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
 
   const handleAuthorizeSession = async () => {
     if (!address || !stream || streamNotLive) return;
+    if (!stream.playbackUrl) {
+      setError(
+        "This stream has no available video source, so a viewing session cannot be started."
+      );
+      return;
+    }
 
     setSessionState("pending");
     setError(null);
@@ -577,8 +616,8 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
         sessionId: session.sessionId,
         accessToken,
       });
-      if (sessionStorageKey) {
-        saveWatchSession(sessionStorageKey, {
+      if (watchSessionKey) {
+        saveWatchSession(watchSessionKey, {
           sessionId: session.sessionId,
           accessToken,
           playbackTime: 0,
@@ -592,76 +631,149 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
       prepaidSecondsRef.current = 0;
       setAmountCharged(0);
       await refreshBlockQuote(session.sessionId);
+      toast.success("Watch session authorized.");
     } catch (err) {
       console.error("Session authorization failed", err);
       setError(
-        err instanceof Error ? err.message : "Session authorization failed"
+        "The watch session couldn’t be authorized. If you declined the wallet signature, try again when ready."
       );
       setSessionState("idle");
     }
   };
 
-  if (!stream) {
+  if (!stream || streamQuery.isPending) {
     return (
-      <main className="min-h-screen px-6 py-10 text-slate-100">
-        <div className="card mx-auto max-w-3xl p-8 text-center">
-          <h1 className="text-2xl font-bold text-white">
-            {streamError ?? "Loading stream..."}
-          </h1>
-          <a
-            href="/"
-            className="mt-4 inline-block text-brand-100 hover:text-white"
-          >
-            Return to streams
-          </a>
+      <main
+        className="min-h-screen px-4 pb-12 sm:px-6"
+        aria-busy="true"
+        aria-label="Loading stream"
+      >
+        <div className="mx-auto max-w-[1440px] pt-5 sm:pt-7">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="h-3 w-40 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+              <div className="h-7 w-2/3 max-w-lg animate-pulse rounded-sm bg-[var(--surface-raised)] sm:h-8" />
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="h-7 w-24 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+              <div className="h-9 w-36 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+            </div>
+          </div>
+
+          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px] xl:gap-7">
+            <section className="min-w-0" aria-hidden="true">
+              <div className="relative aspect-video overflow-hidden rounded-sm bg-black">
+                <div className="absolute inset-0 animate-pulse bg-[var(--surface-raised)]/60" />
+                <div className="absolute bottom-4 left-4 h-10 w-10 animate-pulse rounded-full bg-white/15" />
+                <div className="absolute inset-x-4 bottom-4 h-1 animate-pulse rounded-full bg-white/15" />
+              </div>
+              <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-x border-b border-[var(--panel-border)] bg-[var(--surface)] px-3 py-3 sm:px-4">
+                <div className="h-9 w-32 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+                <div className="h-4 w-32 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--panel-border)] py-4">
+                <div className="h-4 w-28 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+                <div className="h-4 w-24 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+              </div>
+            </section>
+
+            <aside className="min-w-0 space-y-4" aria-hidden="true">
+              <section className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface)] p-4 sm:p-5">
+                <div className="h-4 w-16 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+                <div className="mt-4 divide-y divide-[var(--panel-border)]">
+                  {["w-28", "w-24", "w-24"].map((width, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
+                    >
+                      <div className="h-4 w-24 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+                      <div
+                        className={`h-4 ${width} animate-pulse rounded-sm bg-[var(--surface-raised)]`}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-5 h-11 w-full animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+              </section>
+              <section className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface)] p-4">
+                <div className="h-4 w-24 animate-pulse rounded-sm bg-[var(--surface-raised)]" />
+              </section>
+            </aside>
+          </div>
+          <p className="sr-only" role="status">
+            Loading stream…
+          </p>
         </div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen px-6 py-10 text-slate-100">
-      <div className="mx-auto max-w-6xl">
-        <div className="mb-8 flex items-center justify-between">
-          <div>
-            <p className="text-sm uppercase tracking-[0.2em] text-brand-100">
-              Watch
-            </p>
-            <h1 className="mt-2 text-3xl font-bold text-white">
+    <main className="min-h-screen px-4 pb-12 sm:px-6">
+      <div className="mx-auto max-w-[1440px] pt-5 sm:pt-7">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+          <div className="min-w-0">
+            <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
+              <span>{stream.category}</span>
+              <span aria-hidden="true">·</span>
+              <span title={stream.creatorId}>
+                Created by {shortenWalletAddress(stream.creatorId)}
+              </span>
+            </div>
+            <h1 className="truncate text-xl font-semibold text-[var(--text)] sm:text-2xl">
               {stream.title}
             </h1>
           </div>
-          <div
-            className={`rounded-full border px-3 py-1 text-sm ${
-              streamNotLive
-                ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
-                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-            }`}
-          >
-            {streamNotLive
-              ? `Stream ${stream.status} · prepaid time only`
-              : sessionState === "playing"
-              ? "Payment active"
-              : "Not watching"}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span
+              className={`inline-flex items-center gap-2 rounded-sm border px-2.5 py-1 text-xs font-medium ${
+                streamNotLive
+                  ? "border-[var(--panel-border)] text-[var(--muted)]"
+                  : "border-red-400/40 text-red-200"
+              }`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  streamNotLive ? "bg-slate-400" : "bg-red-400"
+                }`}
+                aria-hidden="true"
+              />
+              {streamNotLive ? `${stream.status} · prepaid time only` : "Live"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowViewingPanel((visible) => !visible)}
+              aria-expanded={showViewingPanel}
+              aria-controls="watch-viewing-panel"
+              className="inline-flex min-h-9 items-center gap-2 rounded-sm border border-[var(--panel-border)] px-3 text-xs font-medium text-[var(--muted)] transition hover:border-[var(--brand-hover)] hover:text-[var(--text)]"
+            >
+              {showViewingPanel ? (
+                <PanelRightClose aria-hidden="true" size={15} />
+              ) : (
+                <PanelRightOpen aria-hidden="true" size={15} />
+              )}
+              {showViewingPanel ? "Hide viewing panel" : "Show viewing panel"}
+            </button>
           </div>
         </div>
 
-        {error && (
-          <div className="mb-6 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-            {error}
-          </div>
-        )}
-
-        <div className="grid gap-6 lg:grid-cols-[1.4fr_0.6fr]">
-          <div className="card overflow-hidden">
-            {stream.playbackUrl ? (
-              <>
+        <div
+          className={`grid items-start gap-5 ${
+            showViewingPanel
+              ? "lg:grid-cols-[minmax(0,1fr)_320px]"
+              : "lg:grid-cols-1"
+          } xl:gap-7`}
+        >
+          <section className="min-w-0">
+            <div className="relative aspect-video overflow-hidden rounded-sm bg-black">
+              {stream.playbackUrl ? (
                 <ReactPlayer
+                  key={playerRetry}
                   ref={playerRef}
                   url={stream.playbackUrl}
                   width="100%"
-                  height="auto"
-                  controls={false}
+                  height="100%"
+                  controls
                   playsinline
                   playbackRate={1}
                   progressInterval={1000}
@@ -679,206 +791,145 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                     file: { hlsVersion: "1.5.17" },
                     twitch: {
                       options: {
-                        controls: false,
+                        controls: true,
                         parent:
                           typeof window === "undefined"
                             ? ["localhost"]
                             : [window.location.hostname],
                       },
                     },
-                    youtube: { playerVars: { controls: 0, disablekb: 1 } },
+                    youtube: { playerVars: { controls: 1 } },
                   }}
-                  className="aspect-video w-full bg-black"
+                  className="absolute inset-0 h-full w-full"
                 />
-                <div className="flex items-center justify-between gap-4 border-t border-slate-700 bg-slate-950 px-4 py-3">
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
+                  <h2 className="text-lg font-semibold">
+                    Video source unavailable
+                  </h2>
+                  <p className="mt-2 max-w-md text-sm text-[var(--muted)]">
+                    This stream has no public playback URL. No new viewing time
+                    can be purchased.
+                  </p>
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-x border-b border-[var(--panel-border)] bg-[var(--surface)] px-3 py-3 sm:px-4">
+              {sessionState === "authorized" &&
+                resumeAvailable &&
+                prepaidSeconds > 0 &&
+                sessionIdRef.current &&
+                accessTokenRef.current && (
                   <button
                     type="button"
-                    onClick={() => void handleTogglePlayback()}
-                    disabled={prepaidSeconds <= 0}
-                    aria-label={
-                      sessionState === "playing"
-                        ? "Pause playback"
-                        : "Play video"
-                    }
-                    className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => void handleResumeSession()}
+                    disabled={!stream.playbackUrl}
+                    className="min-h-10 rounded-sm bg-[var(--action)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {sessionState === "playing"
-                      ? "Pause"
-                      : resumeAvailable
-                      ? `Resume paid session (${prepaidSeconds}s left)`
-                      : prepaidSeconds > 0
-                      ? "Play"
-                      : "Pay to play"}
+                    Resume session
                   </button>
-                  <span className="text-sm tabular-nums text-slate-300">
-                    {Math.floor(playbackSeconds / 60)}:
-                    {String(Math.floor(playbackSeconds) % 60).padStart(2, "0")}
-                  </span>
-                </div>
-              </>
-            ) : (
-              <div className="flex aspect-video flex-col items-center justify-center gap-3 bg-slate-950 px-6 text-center">
-                <div className="text-xl font-semibold text-white">
-                  Playback source unavailable
-                </div>
-                <div className="max-w-md text-sm text-slate-400">
-                  This stream was created before video sources were supported.
-                </div>
-              </div>
-            )}
-            <div className="p-5">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm text-slate-400">{stream.title}</div>
-                  <div className="mt-1 text-xl font-semibold text-white">
-                    Creator {stream.creatorId}
-                  </div>
-                </div>
-              </div>
+                )}
+              <span className="text-sm tabular-nums text-[var(--muted)]">
+                Video position {Math.floor(playbackSeconds / 60)}:
+                {String(Math.floor(playbackSeconds) % 60).padStart(2, "0")}
+              </span>
             </div>
-          </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--panel-border)] py-3 text-sm">
+              <span className="text-[var(--muted)]">Price per minute</span>
+              <span className="font-medium text-[var(--text)]">
+                ${stream.ratePerMinute.toFixed(3)} USDC
+              </span>
+            </div>
+          </section>
 
-          <aside className="card p-5">
-            <div className="mb-5 text-sm uppercase tracking-[0.18em] text-slate-400">
-              Payment panel
-            </div>
-            <div className="space-y-4">
-              <div className="rounded-2xl bg-slate-900 p-4">
-                <div className="text-slate-400">Paid time</div>
-                <div className="mt-2 text-3xl font-bold text-white">
-                  {Math.floor(secondsWatched / 60)}:
-                  {String(secondsWatched % 60).padStart(2, "0")}
-                </div>
-              </div>
-              <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm">
-                <div className="flex items-center justify-between text-emerald-100">
-                  <span>Prepaid viewing time</span>
-                  <span className="font-semibold">
+          <aside
+            id="watch-viewing-panel"
+            className={`${showViewingPanel ? "" : "hidden"} min-w-0 space-y-4`}
+          >
+            <section className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface)] p-4 sm:p-5">
+              <h2 className="text-sm font-semibold text-[var(--text)]">
+                Viewing
+              </h2>
+              <dl className="mt-4 divide-y divide-[var(--panel-border)] text-sm">
+                <div className="flex items-center justify-between gap-3 py-3 first:pt-0">
+                  <dt className="text-[var(--muted)]">Time remaining</dt>
+                  <dd className="font-semibold tabular-nums text-[var(--text)]">
                     {Math.floor(prepaidSeconds / 60)}:
                     {String(prepaidSeconds % 60).padStart(2, "0")}
-                  </span>
+                  </dd>
                 </div>
-                {sessionState === "authorized" && prepaidSeconds === 0 && (
-                  <div className="mt-2 text-emerald-100/80">
-                    {blockQuote && blockQuote.seconds > 0
-                      ? `Next block: ${blockQuote.seconds}s for $${blockQuote.amount} USDC`
-                      : "Unable to quote the next block."}
-                  </div>
-                )}
-                {prepaidSeconds > 0 && (
-                  <div className="mt-2 text-emerald-200/80">
-                    Playback is covered by this prepaid block.
-                  </div>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div className="rounded-2xl bg-slate-900 p-3">
-                  <div className="text-slate-400">Current cost</div>
-                  <div className="mt-2 text-xl font-semibold text-white">
-                    ${currentCost}
-                  </div>
+                <div className="flex items-center justify-between gap-3 py-3">
+                  <dt className="text-[var(--muted)]">Time watched</dt>
+                  <dd className="font-medium tabular-nums text-[var(--text)]">
+                    {Math.floor(secondsWatched / 60)}:
+                    {String(secondsWatched % 60).padStart(2, "0")}
+                  </dd>
                 </div>
-                <div className="rounded-2xl bg-slate-900 p-3">
-                  <div className="text-slate-400">Rate</div>
-                  <div className="mt-2 text-xl font-semibold text-white">
-                    ${stream.ratePerMinute.toFixed(3)}/min
-                  </div>
+                <div className="flex items-center justify-between gap-3 py-3 last:pb-0">
+                  <dt className="text-[var(--muted)]">Amount spent</dt>
+                  <dd className="font-medium tabular-nums text-[var(--text)]">
+                    ${currentCost} USDC
+                  </dd>
                 </div>
-              </div>
-              <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-4 text-sm text-slate-300">
-                <div className="flex items-center justify-between">
-                  <span>Wallet</span>
-                  <span className="font-semibold text-white">
-                    {address
-                      ? `${address.slice(0, 6)}...${address.slice(-4)}`
-                      : "Not connected"}
-                  </span>
-                </div>
-              </div>
-              <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-4 text-sm text-slate-300">
-                <div className="flex items-center justify-between">
-                  <span>Arc wallet USDC</span>
-                  <span className="font-semibold text-white">
-                    {walletUsdcBalance === null
-                      ? "\u2014"
-                      : `${walletUsdcBalance} USDC`}
-                  </span>
-                </div>
-              </div>
-              <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-4 text-sm text-slate-300">
-                <div className="flex items-center justify-between">
-                  <span>Gateway available</span>
-                  <span className="font-semibold text-white">
-                    {gatewayBalance === null
-                      ? "\u2014"
-                      : `${gatewayBalance} USDC`}
-                  </span>
-                </div>
-                {address && (
-                  <div className="mt-3 flex gap-2">
-                    <input
-                      type="number"
-                      value={depositAmount}
-                      onChange={(event) => setDepositAmount(event.target.value)}
-                      min="0.01"
-                      step="0.01"
-                      aria-label="Gateway transfer amount in USDC"
-                      className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleDeposit}
-                      disabled={
-                        gatewayDeposit.isPending ||
-                        gatewayWithdrawal.isPending ||
-                        !walletClient
-                      }
-                      className="rounded-lg bg-brand-500 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {gatewayDeposit.isPending ? "Depositing..." : "Deposit"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleWithdraw}
-                      disabled={
-                        gatewayWithdrawal.isPending ||
-                        gatewayDeposit.isPending ||
-                        !walletClient ||
-                        !gatewayBalance ||
-                        Number(depositAmount) <= 0 ||
-                        Number(depositAmount) > Number(gatewayBalance)
-                      }
-                      className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {gatewayWithdrawal.isPending
-                        ? "Withdrawing..."
-                        : "Withdraw"}
-                    </button>
-                  </div>
-                )}
-              </div>
-              <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-3">
-                <ConnectKitButton />
-              </div>
+              </dl>
+
+              {streamNotLive && (
+                <p className="mt-4 border-l-2 border-[var(--brand-hover)] pl-3 text-sm text-[var(--muted)]">
+                  {prepaidSeconds > 0
+                    ? "This stream is offline. You can use the prepaid time shown above, but cannot buy more while it is offline."
+                    : "This stream is offline. A saved session with prepaid time is required to watch; new time cannot be purchased."}
+                </p>
+              )}
+              {!streamNotLive && sessionState === "idle" && (
+                <p className="mt-4 text-sm text-[var(--muted)]">
+                  Connect your wallet to continue. Signing authorizes a watch
+                  session; it does not approve a payment.
+                </p>
+              )}
+              {sessionState === "pending" && (
+                <p className="mt-4 text-sm text-[var(--muted)]">
+                  Waiting for your wallet signature…
+                </p>
+              )}
+              {sessionState === "authorized" && prepaidSeconds > 0 && (
+                <p className="mt-4 text-sm text-[var(--muted)]">
+                  Your prepaid time is ready. Press Play when you’re ready to
+                  watch.
+                </p>
+              )}
+              {sessionState === "authorized" && prepaidSeconds === 0 && (
+                <p className="mt-4 text-sm text-[var(--muted)]">
+                  Choose and pay for a viewing duration before playback.
+                </p>
+              )}
+              {sessionState === "playing" && (
+                <p className="mt-4 text-sm text-[var(--success)]">
+                  Prepaid time is being used while playback is active.
+                </p>
+              )}
+              {sessionState === "capped" && (
+                <p className="mt-4 text-sm text-[var(--muted)]">
+                  This watch session has ended. Start a new one to continue.
+                </p>
+              )}
 
               {!streamNotLive &&
                 (sessionState === "idle" || sessionState === "capped") && (
                   <button
                     type="button"
                     onClick={handleAuthorizeSession}
-                    disabled={isSigning || !address}
-                    className="w-full rounded-full bg-brand-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={isSigning || !address || !stream.playbackUrl}
+                    className="mt-5 min-h-11 w-full rounded-sm bg-[var(--action)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isSigning
-                      ? "Authorizing..."
-                      : address
-                      ? sessionState === "capped"
-                        ? "Authorize new session"
-                        : "Authorize session"
-                      : "Connect wallet to authorize"}
+                      ? "Check your wallet…"
+                      : !address
+                      ? "Connect wallet to continue"
+                      : sessionState === "capped"
+                      ? "Start a new session"
+                      : "Authorize watch session"}
                   </button>
                 )}
-
               {!streamNotLive &&
                 sessionState === "authorized" &&
                 prepaidSeconds === 0 && (
@@ -892,75 +943,143 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                       paidBlockMutation.isPending ||
                       !address ||
                       !blockQuote ||
-                      blockQuote.seconds === 0
+                      blockQuote.seconds === 0 ||
+                      !stream.playbackUrl
                     }
-                    className="w-full rounded-full bg-brand-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="mt-5 min-h-11 w-full rounded-sm bg-[var(--action)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Choose viewing duration
+                    Choose viewing time
                   </button>
                 )}
-
-              {streamNotLive && prepaidSeconds === 0 && (
-                <div className="text-center text-sm text-amber-200">
-                  This stream is not live. No new viewing time can be purchased.
-                </div>
+              {sessionState === "authorized" &&
+                prepaidSeconds === 0 &&
+                blockQuote && (
+                  <p className="mt-2 text-center text-xs text-[var(--muted)]">
+                    Next available block: {blockQuote.seconds} seconds · $
+                    {blockQuote.amount} USDC
+                  </p>
+                )}
+              {prepaidSeconds === 0 && secondsWatched > 0 && (
+                <p className="mt-3 text-center text-sm text-[var(--muted)]">
+                  Viewing time has run out. Buy another block to continue.
+                </p>
               )}
-
-              {streamNotLive && prepaidSeconds > 0 && (
-                <div className="text-center text-sm text-amber-200">
-                  Use your remaining prepaid time. Additional time is
-                  unavailable.
-                </div>
+              {prepaidSeconds > 0 && (
+                <p className="mt-3 text-center text-xs text-[var(--muted)]">
+                  Unused prepaid time is not refunded.
+                </p>
               )}
+            </section>
 
-              {sessionState === "pending" && (
-                <div className="text-center text-sm text-slate-400">
-                  Authorizing session...
-                </div>
-              )}
-
-              {sessionState === "playing" && (
-                <div className="text-center text-sm text-emerald-300">
-                  Playback is using prepaid time. Another signature is needed
-                  when this block ends.
-                </div>
-              )}
-
-              {sessionState === "authorized" && (
-                <div className="text-center text-sm text-slate-300">
-                  {prepaidSeconds > 0
-                    ? "Block paid. Play the video when ready."
-                    : "Pay for a viewing block before starting playback."}
-                </div>
-              )}
-
-              {sessionState === "capped" && (
-                <div className="text-center text-sm text-red-300">
-                  Session ended
-                </div>
-              )}
-            </div>
+            <details className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface)]">
+              <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-[var(--muted)] focus-visible:outline-offset-[-2px]">
+                Wallet funds
+              </summary>
+              <div className="space-y-3 border-t border-[var(--panel-border)] p-4 text-sm">
+                {!address ? (
+                  <p className="text-[var(--muted)]">
+                    Connect a wallet to view funds or add money for viewing.
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[var(--muted)]">
+                        Wallet balance
+                      </span>
+                      <span className="text-right text-[var(--text)]">
+                        {balancesQuery.isPending
+                          ? "Loading…"
+                          : balancesQuery.isError
+                          ? "Unavailable"
+                          : walletUsdcBalance === null
+                          ? "Unavailable"
+                          : `${walletUsdcBalance} USDC`}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[var(--muted)]">
+                        Available for viewing
+                      </span>
+                      <span className="text-right text-[var(--text)]">
+                        {balancesQuery.isPending
+                          ? "Loading…"
+                          : balancesQuery.isError
+                          ? "Unavailable"
+                          : gatewayBalance === null
+                          ? "Unavailable"
+                          : `${gatewayBalance} USDC`}
+                      </span>
+                    </div>
+                    <label className="block text-xs text-[var(--muted)]">
+                      Amount to add (USDC)
+                      <input
+                        type="number"
+                        value={depositAmount}
+                        onChange={(event) =>
+                          setDepositAmount(event.target.value)
+                        }
+                        min="0.01"
+                        step="0.01"
+                        className="mt-1 min-h-10 w-full rounded-sm border border-[var(--panel-border)] bg-[var(--background)] px-3 text-sm text-[var(--text)]"
+                      />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDeposit}
+                        disabled={
+                          gatewayDeposit.isPending ||
+                          gatewayWithdrawal.isPending ||
+                          !walletClient ||
+                          Number(depositAmount) <= 0
+                        }
+                        className="min-h-10 rounded-sm bg-[var(--action)] px-3 text-sm font-semibold text-[#1c1f1e] disabled:opacity-50"
+                      >
+                        {gatewayDeposit.isPending ? "Adding…" : "Add funds"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleWithdraw}
+                        disabled={
+                          gatewayWithdrawal.isPending ||
+                          gatewayDeposit.isPending ||
+                          !walletClient ||
+                          !gatewayBalance ||
+                          Number(depositAmount) <= 0 ||
+                          Number(depositAmount) > Number(gatewayBalance)
+                        }
+                        className="min-h-10 rounded-sm border border-[var(--panel-border)] px-3 text-sm text-[var(--text)] disabled:opacity-50"
+                      >
+                        {gatewayWithdrawal.isPending
+                          ? "Withdrawing…"
+                          : "Withdraw"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </details>
           </aside>
         </div>
       </div>
       {showPayModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-8">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/75 p-4">
           <section
             role="dialog"
             aria-modal="true"
             aria-labelledby="payment-modal-title"
-            className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-950 p-6 shadow-2xl"
+            className="my-auto w-full max-w-md rounded-sm border border-[var(--panel-border)] bg-[var(--surface)] p-5 shadow-2xl sm:p-6"
           >
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2
                   id="payment-modal-title"
-                  className="text-xl font-semibold text-white"
+                  className="text-lg font-semibold text-[var(--text)]"
                 >
-                  Choose viewing duration
+                  Choose viewing time
                 </h2>
-                <p className="mt-1 text-sm text-slate-400">
-                  ${stream.ratePerMinute.toFixed(2)} per minute
+                <p className="mt-1 text-sm text-[var(--muted)]">
+                  Price per minute: ${stream.ratePerMinute.toFixed(3)} USDC
                 </p>
               </div>
               <button
@@ -968,14 +1087,14 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                 onClick={() => setShowPayModal(false)}
                 disabled={paidBlockMutation.isPending}
                 aria-label="Close payment dialog"
-                className="rounded-md px-2 py-1 text-xl leading-none text-slate-400 hover:text-white disabled:opacity-50"
+                className="rounded-sm px-2 text-xl leading-none text-[var(--muted)] hover:text-white disabled:opacity-50"
               >
                 &times;
               </button>
             </div>
-            <div className="mt-6 grid grid-cols-[1fr_1fr] gap-3">
-              <label className="text-sm text-slate-300">
-                Number
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <label className="text-sm text-[var(--muted)]">
+                Duration
                 <input
                   type="number"
                   min="1"
@@ -988,10 +1107,10 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                     setDurationCount(Number(event.target.value))
                   }
                   disabled={paidBlockMutation.isPending}
-                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-lg text-white"
+                  className="mt-1 min-h-11 w-full rounded-sm border border-[var(--panel-border)] bg-[var(--background)] px-3 text-lg text-[var(--text)]"
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-[var(--muted)]">
                 Unit
                 <select
                   value={durationUnit}
@@ -1009,7 +1128,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                     );
                   }}
                   disabled={paidBlockMutation.isPending}
-                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-lg text-white"
+                  className="mt-1 min-h-11 w-full rounded-sm border border-[var(--panel-border)] bg-[var(--background)] px-3 text-base text-[var(--text)]"
                 >
                   <option value="seconds">Seconds</option>
                   <option value="minutes">Minutes</option>
@@ -1017,36 +1136,47 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                 </select>
               </label>
             </div>
-            <div className="mt-6 rounded-lg border border-slate-700 bg-slate-900 p-4">
-              <div className="text-sm text-slate-400">Amount due</div>
-              <div className="mt-1 text-3xl font-semibold tabular-nums text-white">
-                ${durationAmount}{" "}
-                <span className="text-base font-normal text-slate-400">
-                  USDC
+            <div className="mt-5 border-y border-[var(--panel-border)] py-4">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-[var(--muted)]">Selected time</span>
+                <span className="font-medium text-[var(--text)]">
+                  {durationValid
+                    ? `${durationCount} ${durationUnit}${
+                        durationCount === 1 ? "" : "s"
+                      } (${durationSeconds} sec)`
+                    : "Choose up to 24 hours"}
                 </span>
               </div>
-              <div className="mt-2 text-sm text-slate-400">
-                {durationValid
-                  ? `${durationSeconds} seconds of prepaid viewing`
-                  : "Choose a duration up to 24 hours"}
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <span className="text-sm text-[var(--muted)]">Amount due</span>
+                <span className="text-xl font-semibold tabular-nums text-[var(--text)]">
+                  ${durationAmount} USDC
+                </span>
               </div>
             </div>
-            {error && (
-              <p role="alert" className="mt-4 text-sm text-red-300">
-                {error}
-              </p>
-            )}
+            <p className="mt-3 text-xs text-[var(--muted)]">
+              Review the duration and total before approving in your wallet.
+              Unused prepaid time is not refunded.
+            </p>
             <button
               type="button"
               onClick={() => void handlePayNextBlock(durationSeconds)}
               disabled={
                 !durationValid || paidBlockMutation.isPending || !address
               }
-              className="mt-6 w-full rounded-lg bg-brand-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-5 min-h-11 w-full rounded-sm bg-[var(--action)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {paidBlockMutation.isPending
-                ? "Waiting for payment signature..."
-                : `Pay $${durationAmount} USDC`}
+                ? "Waiting for wallet approval…"
+                : `Approve $${durationAmount} USDC`}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPayModal(false)}
+              disabled={paidBlockMutation.isPending}
+              className="mt-2 min-h-10 w-full text-sm text-[var(--muted)] hover:text-white disabled:opacity-50"
+            >
+              Cancel
             </button>
           </section>
         </div>

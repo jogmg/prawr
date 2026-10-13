@@ -110,6 +110,29 @@ export async function listStreams(): Promise<StreamRecord[]> {
   return data;
 }
 
+export async function listStreamsPage(
+  offset: number,
+  limit: number
+): Promise<{ items: StreamRecord[]; nextOffset: number | null }> {
+  const params = new URLSearchParams({
+    offset: String(offset),
+    limit: String(limit),
+  });
+  const response = await fetch(`${API_BASE_URL}/streams?${params}`, {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load streams: ${response.status}`);
+  }
+
+  return response.json() as Promise<{
+    items: StreamRecord[];
+    nextOffset: number | null;
+  }>;
+}
+
 export async function createStream(payload: {
   title: string;
   creatorId: string;

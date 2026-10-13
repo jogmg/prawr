@@ -2,6 +2,7 @@
 
 import {
   useMutation,
+  useInfiniteQuery,
   useQueries,
   useQuery,
   useQueryClient,
@@ -11,6 +12,7 @@ import {
   getOfflineSessionCredentials,
   streamDetailQuery,
   streamListQuery,
+  streamPagesQuery,
   streamKeys,
   type DiscoverableStream,
 } from "../queries/stream-queries";
@@ -26,8 +28,9 @@ export function useStreams(enabled = true) {
 }
 
 export function useDiscoverableStreams() {
-  const streamsQuery = useStreams();
-  const credentials = getOfflineSessionCredentials(streamsQuery.data ?? []);
+  const streamsQuery = useInfiniteQuery(streamPagesQuery());
+  const streams = streamsQuery.data?.pages.flatMap(({ items }) => items) ?? [];
+  const credentials = getOfflineSessionCredentials(streams);
   const restoredSessions = useQueries({
     queries: credentials.map(({ sessionId, accessToken }) =>
       restoreWatchSessionQuery(sessionId, accessToken)
@@ -44,14 +47,12 @@ export function useDiscoverableStreams() {
         : []
     )
   );
-  const data: DiscoverableStream[] = (streamsQuery.data ?? []).flatMap(
-    (stream) => {
-      if (stream.status === "live") return [stream];
-      return prepaidStreamIds.has(stream.id)
-        ? [{ ...stream, hasPrepaidTime: true }]
-        : [];
-    }
-  );
+  const data: DiscoverableStream[] = streams.flatMap((stream) => {
+    if (stream.status === "live") return [stream];
+    return prepaidStreamIds.has(stream.id)
+      ? [{ ...stream, hasPrepaidTime: true }]
+      : [];
+  });
 
   return { ...streamsQuery, data };
 }

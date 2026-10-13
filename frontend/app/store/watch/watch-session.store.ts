@@ -57,27 +57,32 @@ export function getSavedWatchSessions(
   if (typeof window === "undefined") return [];
   const idFilter = streamIds ? new Set(streamIds) : null;
   const sessions: StoredWatchSession[] = [];
+  const keys = new Set<string>();
 
-  for (let index = 0; index < sessionStorage.length; index += 1) {
-    const key = sessionStorage.key(index);
-    if (!key?.startsWith("prawr:watch-session:")) continue;
-    const streamId = key.split(":")[2];
-    if (!streamId || (idFilter && !idFilter.has(streamId))) continue;
-    try {
-      const value = sessionStorage.getItem(key);
-      if (!value) continue;
-      const saved = JSON.parse(value) as Partial<StoredWatchSession>;
-      if (!saved.sessionId || !saved.accessToken) continue;
-      sessions.push({
-        streamId,
-        sessionId: saved.sessionId,
-        accessToken: saved.accessToken,
-        playbackTime: Number.isFinite(saved.playbackTime)
-          ? Number(saved.playbackTime)
-          : 0,
-      });
-    } catch {
-      continue;
+  for (const storage of [localStorage, sessionStorage]) {
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (!key?.startsWith("prawr:watch-session:") || keys.has(key)) continue;
+      keys.add(key);
+      const streamId = key.split(":")[2];
+      if (!streamId || (idFilter && !idFilter.has(streamId))) continue;
+      try {
+        const value = storage.getItem(key);
+        if (!value) continue;
+        const saved = JSON.parse(value) as Partial<StoredWatchSession>;
+        if (!saved.sessionId || !saved.accessToken) continue;
+        if (storage === sessionStorage) localStorage.setItem(key, value);
+        sessions.push({
+          streamId,
+          sessionId: saved.sessionId,
+          accessToken: saved.accessToken,
+          playbackTime: Number.isFinite(saved.playbackTime)
+            ? Number(saved.playbackTime)
+            : 0,
+        });
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -90,7 +95,7 @@ export function saveWatchSession(
 ) {
   if (typeof window === "undefined") return;
   const streamId = key.split(":")[2];
-  sessionStorage.setItem(key, JSON.stringify({ ...session, streamId }));
+  localStorage.setItem(key, JSON.stringify({ ...session, streamId }));
 }
 
 export function readWatchSession(
@@ -99,10 +104,11 @@ export function readWatchSession(
 ): StoredWatchSession | null {
   if (typeof window === "undefined") return null;
   try {
-    const value = sessionStorage.getItem(key);
+    const value = localStorage.getItem(key) ?? sessionStorage.getItem(key);
     if (!value) return null;
     const saved = JSON.parse(value) as Partial<StoredWatchSession>;
     if (!saved.sessionId || !saved.accessToken) return null;
+    if (!localStorage.getItem(key)) localStorage.setItem(key, value);
     return {
       streamId,
       sessionId: saved.sessionId,
@@ -117,5 +123,8 @@ export function readWatchSession(
 }
 
 export function removeWatchSession(key: string) {
-  if (typeof window !== "undefined") sessionStorage.removeItem(key);
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
+  }
 }

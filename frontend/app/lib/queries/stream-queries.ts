@@ -1,7 +1,8 @@
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import {
   getStreamById,
   listStreams,
+  listStreamsPage,
   restoreSession,
   type StreamRecord,
 } from "../prawr-api";
@@ -19,6 +20,16 @@ export const streamListQuery = () =>
   queryOptions({
     queryKey: streamKeys.lists(),
     queryFn: listStreams,
+    staleTime: 20_000,
+    gcTime: 10 * 60_000,
+  });
+
+export const streamPagesQuery = () =>
+  infiniteQueryOptions({
+    queryKey: [...streamKeys.lists(), "pages"],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => listStreamsPage(pageParam, 12),
+    getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
     staleTime: 20_000,
     gcTime: 10 * 60_000,
   });
