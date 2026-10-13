@@ -36,14 +36,14 @@ export const metadata: Metadata = {
     title: "Prawr | Pay-per-second livestreams",
     description:
       "Watch livestreams and pay only for the time you watch with Prawr, a decentralized micropayment streaming platform built on Arc.",
-    ...(siteUrl ? { images: ["/opengraph-image"] } : {}),
+    ...(siteUrl ? { images: [{ url: "/assets/og-image" }] } : {}),
   },
   twitter: {
     card: siteUrl ? "summary_large_image" : "summary",
     title: "Prawr | Pay-per-second livestreams",
     description:
       "Watch livestreams and pay only for the time you watch with Prawr, a decentralized micropayment streaming platform built on Arc.",
-    ...(siteUrl ? { images: ["/opengraph-image"] } : {}),
+    ...(siteUrl ? { images: [{ url: "/assets/og-image" }] } : {}),
   },
   robots: {
     index: true,
