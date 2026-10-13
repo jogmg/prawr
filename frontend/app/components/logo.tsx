@@ -1,4 +1,4 @@
-import logoII from "@/public/assets/prawr_complete.svg";
+import logo from "@/public/assets/prawr_logo_complete.svg";
 import Image from "next/image";
 import Link from "next/link";
 
@@ -10,7 +10,7 @@ export function Logo() {
       aria-label="Prawr home"
     >
       <div className="relative aspect-[12/7] w-16">
-        <Image src={logoII} alt="Prawr logo" className="object-cover" fill />
+        <Image src={logo} alt="Prawr logo" className="object-cover" fill />
       </div>
     </Link>
   );

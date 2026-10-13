@@ -37,6 +37,9 @@ file through `ConfigModule`; the API defaults to port `3001`.
 
 `frontend/.env` is read by Next.js. Set these values there:
 
+- `NEXT_PUBLIC_SITE_URL` is the public HTTPS origin of the deployed frontend.
+  Set it to the production domain so canonical metadata and the sitemap use
+  the correct host; do not leave the example value in a deployment.
 - `NEXT_PUBLIC_ARC_RPC_URL` is the public Arc Testnet RPC used by wagmi/viem.
   The default is `https://rpc.testnet.arc.io`; use a provider URL instead if
   you have one.
