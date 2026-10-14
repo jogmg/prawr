@@ -2,6 +2,13 @@
 
 The backend is a NestJS API. It stores streams, watch sessions, payment receipts, and creator settlement data in MongoDB. It also verifies wallet-signed session authorization and handles Circle Gateway payment requests.
 
+## Table Of Contents
+
+- [Current Features](#current-features)
+- [Run And Test](#run-and-test)
+- [Configuration](#configuration)
+- [In Progress And Next](#in-progress-and-next)
+
 ## Current Features
 
 - List and read stream records.
@@ -45,7 +52,7 @@ Set `MONGODB_URI` to the MongoDB database. The current app implementation target
 
 Do not expose Circle credentials, video-provider credentials, signing keys, or other secrets through frontend settings or API responses. A video delivery integration should keep provider API credentials and playback-token signing keys on the backend.
 
-## Planned Work
+## In Progress And Next
 
 - Add creator ownership checks to every stream-management endpoint.
 - Support direct broadcasts from creators' preferred streaming tools through authenticated backend routes, instead of relying only on externally hosted playback URLs.
@@ -55,7 +62,3 @@ Do not expose Circle credentials, video-provider credentials, signing keys, or o
 - Add rate limits, audit events, and production-focused error handling.
 
 These items are not implemented yet. For the overall goal and roadmap, see the [root README](../README.md).
-
-## Author
-
-Joshua Attah jogmg <joattah3@gmail.com>

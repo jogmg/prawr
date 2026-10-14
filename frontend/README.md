@@ -2,6 +2,12 @@
 
 The frontend is a Next.js app. It contains the public stream homepage, watch pages, wallet connection, payment controls, and creator dashboard at `/creator`.
 
+## Table Of Contents
+
+- [Run Locally](#run-locally)
+- [Configuration](#configuration)
+- [In Progress And Next](#in-progress-and-next)
+
 ## Run Locally
 
 From the repository root:
@@ -33,7 +39,7 @@ Set `NEXT_PUBLIC_API_BASE_URL` to the backend URL and set the Arc RPC and Wallet
 
 Variables with the `NEXT_PUBLIC_` prefix are included in browser code and are visible to users. Use them only for public configuration. Never put Circle or video-provider API secrets, private signing keys, creator ingest keys, or wallet private keys there.
 
-## Playback Security
+## In Progress And Next
 
 Today the frontend receives the stream's playback URL from the public stream API and passes it to the player. Anyone watching can inspect the URL in browser tools or network requests. Hiding it in the page or encrypting it in frontend code would not secure it.
 
@@ -42,7 +48,3 @@ The planned secure flow is for the backend to authorize a viewer and return a sh
 The planned live-streaming flow will let creators broadcast directly to Prawr using their preferred streaming tools, such as OBS, instead of relying on YouTube or Twitch playback URLs. This would give Prawr more control over stream access and allow the platform's viewing and payment flow to apply to the live broadcast. Direct streaming is not implemented yet.
 
 See the [root README](../README.md) for the project goal and roadmap.
-
-## Author
-
-jogmg <joattah3@gmail.com>
