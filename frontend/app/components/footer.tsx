@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FaLaptopCode } from "react-icons/fa6";
+import { FaLaptopCode, FaXTwitter } from "react-icons/fa6";
 import { Logo } from "./logo";
 
 export function Footer() {
@@ -11,15 +11,15 @@ export function Footer() {
           &copy; {new Date().getFullYear()} Prawr. All rights reserved.
         </p>
         <div className="flex items-center gap-3">
-          {/* <Link
-            href="#"
+          <Link
+            href="https://x.com/prawr_tv"
             target="_blank"
             aria-label="Prawr on X"
             title="X"
             className="grid size-9 shrink-0 place-items-center rounded-sm border border-[var(--panel-border)] text-[var(--muted)] transition hover:border-[var(--brand-hover)] hover:text-[var(--brand)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand)]"
           >
             <FaXTwitter size={18} aria-hidden="true" />
-          </Link> */}
+          </Link>
           <Link
             href="https://jogmg-frontend.vercel.app/"
             target="_blank"
