@@ -1,10 +1,11 @@
 "use client";
 
-import { Copy, Info, PanelRightClose, PanelRightOpen, X } from "lucide-react";
-import ReactPlayer from "react-player/lazy";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import type { BatchEvmSigner } from "@circle-fin/x402-batching";
 import { useQueryClient } from "@tanstack/react-query";
+import { Copy, Info, PanelRightClose, PanelRightOpen, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactPlayer from "react-player/lazy";
+import { toast } from "sonner";
 import { formatUnits } from "viem";
 import {
   useAccount,
@@ -12,24 +13,23 @@ import {
   useSignTypedData,
   useWalletClient,
 } from "wagmi";
-import { buildSessionAuthorizationMessage } from "../../lib/prawr-api";
-import { shortenWalletAddress } from "../../lib/helpers/wallet";
 import { type GatewayWithdrawalSigner } from "../../lib/gateway-client";
-import type { BatchEvmSigner } from "@circle-fin/x402-batching";
+import { shortenWalletAddress } from "../../lib/helpers/wallet";
+import {
+  useGatewayDeposit,
+  useGatewayWithdrawal,
+} from "../../lib/hooks/use-gateway-mutations";
 import { useStream } from "../../lib/hooks/use-stream-queries";
+import {
+  usePayForWatchBlock,
+  useWatchSessionMutations,
+} from "../../lib/hooks/use-watch-mutations";
 import {
   useRestoredWatchSession,
   useWatchGatewayBalances,
   useWatchPaymentRequirements,
 } from "../../lib/hooks/use-watch-queries";
-import {
-  useGatewayDeposit,
-  useGatewayWithdrawal,
-} from "../../lib/hooks/use-gateway-mutations";
-import {
-  usePayForWatchBlock,
-  useWatchSessionMutations,
-} from "../../lib/hooks/use-watch-mutations";
+import { buildSessionAuthorizationMessage } from "../../lib/prawr-api";
 import { watchPaymentRequirementsQuery } from "../../lib/queries/watch-queries";
 import {
   readWatchSession,
@@ -136,11 +136,8 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
     address && stream
       ? `prawr:watch-session:${stream.id}:${address.toLowerCase()}`
       : null;
+  const streamId = stream?.id;
   const streamNotLive = stream?.status !== "live";
-  // const streamError =
-  //   streamQuery.error instanceof Error
-  //     ? streamQuery.error.message
-  //     : "Unable to load stream.";
 
   useEffect(() => {
     if (!error) return;
@@ -168,9 +165,9 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
   }, [balancesFailed, refetchBalances]);
 
   useEffect(() => {
-    if (!stream) return;
-    showWatchGuide(stream.id);
-  }, [stream?.id]);
+    if (!streamId) return;
+    showWatchGuide(streamId);
+  }, [streamId]);
 
   const applyPendingPlaybackTime = () => {
     const player = playerRef.current;

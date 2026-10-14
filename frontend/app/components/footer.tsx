@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FaLaptopCode, FaXTwitter } from "react-icons/fa6";
+import { FaLaptopCode } from "react-icons/fa6";
 import { Logo } from "./logo";
 
 export function Footer() {
