@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "motion/react";
 import Link from "next/link";
 import { useEffect, useRef } from "react";
 import ReactPlayer from "react-player/lazy";
@@ -34,7 +35,10 @@ function StreamPreview({ playbackUrl }: { playbackUrl?: string }) {
   }
 
   return (
-    <div className="relative aspect-video w-full overflow-hidden bg-black">
+    <div
+      className="relative aspect-video w-full overflow-hidden rounded-none bg-black"
+      style={{ borderRadius: 0 }}
+    >
       <ReactPlayer
         className="absolute inset-0"
         ref={playerRef}
@@ -80,15 +84,13 @@ function StreamPreview({ playbackUrl }: { playbackUrl?: string }) {
 
 function StreamSkeleton() {
   return (
-    <div
-      className="overflow-hidden rounded-md border border-[var(--panel-border)] bg-[var(--surface)]"
-      aria-hidden="true"
-    >
-      <div className="aspect-video animate-pulse bg-[var(--surface-raised)]" />
-      <div className="space-y-3 p-4">
-        <div className="h-3 w-1/3 animate-pulse rounded bg-[var(--surface-raised)]" />
-        <div className="h-5 w-2/3 animate-pulse rounded bg-[var(--surface-raised)]" />
-        <div className="h-3 w-1/2 animate-pulse rounded bg-[var(--surface-raised)]" />
+    <div className="min-w-0" aria-hidden="true">
+      <div className="relative aspect-video animate-pulse bg-[var(--surface-raised)]">
+        <div className="absolute left-3 top-3 h-6 w-28 rounded-sm bg-black/30" />
+      </div>
+      <div className="flex items-center justify-between gap-3 pt-3">
+        <div className="h-3 min-w-0 w-2/3 animate-pulse rounded bg-[var(--surface-raised)]" />
+        <div className="h-3 w-16 shrink-0 animate-pulse rounded bg-[var(--surface-raised)]" />
       </div>
     </div>
   );
@@ -152,7 +154,24 @@ export default function HomePage() {
           </div>
         </div>
 
-        {streamsFailed ? null : streamsQuery.isPending ? (
+        {streamsFailed ? (
+          <div
+            className="rounded-md border border-[var(--panel-border)] bg-[var(--surface)] px-5 py-12 text-center"
+            role="alert"
+          >
+            <h2 className="text-lg font-medium">Streams couldn’t load</h2>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              Check your connection and try loading the streams again.
+            </p>
+            <button
+              type="button"
+              onClick={() => void refetchStreams()}
+              className="mt-5 rounded-md border border-[var(--panel-border)] bg-[var(--surface-raised)] px-4 py-2 text-sm font-semibold text-[var(--text)] transition hover:border-[var(--brand-hover)]"
+            >
+              Try again
+            </button>
+          </div>
+        ) : streamsQuery.isPending ? (
           <div
             className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
             aria-label="Loading streams"
@@ -175,47 +194,65 @@ export default function HomePage() {
               const offline = stream.status !== "live";
               const href = `/watch/${encodeURIComponent(stream.id)}`;
               return (
-                <article key={stream.id} className="min-w-0">
+                <motion.article
+                  key={stream.id}
+                  className="relative min-w-0"
+                  initial="rest"
+                  whileHover="hover"
+                  variants={{
+                    rest: { y: 0, scale: 1 },
+                    hover: { y: -5, scale: 1.012 },
+                  }}
+                  transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }}
+                >
                   <Link
                     href={href}
-                    className="group relative block overflow-hidden rounded-md bg-black focus-visible:outline-offset-4"
+                    className="stream-card group block min-w-0 focus-visible:outline-offset-4"
                     aria-label={`Open ${stream.title}`}
                   >
-                    <StreamPreview playbackUrl={stream.playbackUrl} />
-                    <span
-                      className={`absolute left-3 top-3 rounded-sm px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
-                        offline
-                          ? "bg-[#2b302e] text-slate-100"
-                          : "bg-red-900/90 text-white"
-                      }`}
-                    >
-                      {offline ? "Offline · time remaining" : "Live"}
-                    </span>
-                  </Link>
-                  <div className="pt-3">
-                    <div className="flex items-center justify-between gap-3 text-xs text-[var(--muted)]">
-                      <span className="truncate">{stream.title}</span>
-                      <span className="shrink-0">
-                        {formatRate(stream.ratePerMinute)}
-                      </span>
-                    </div>
-                    {/* <h2 className="mt-1 truncate text-base font-semibold text-[var(--text)]">
-                      <Link href={href} className="hover:text-[var(--action)]">
-                        {stream.title}
-                      </Link>
-                    </h2> */}
-                    {/* <div className="mt-1 flex items-start justify-between gap-3 text-sm">
-                      <span className="truncate text-[var(--muted)]">
-                        Creator
-                      </span>
-                      {offline && (
-                        <span className="max-w-[45%] text-right text-xs text-[var(--muted)]">
-                          Use prepaid time; no new time can be bought offline.
+                    <div className="relative">
+                      <motion.div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute -left-2 top-0 right-0 -bottom-2 z-0 bg-[var(--brand)]"
+                        style={{
+                          clipPath:
+                            "polygon(0 8px, 8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%)",
+                        }}
+                        variants={{
+                          rest: { opacity: 0 },
+                          hover: { opacity: 1 },
+                        }}
+                        transition={{
+                          duration: 0.18,
+                          ease: [0.2, 0.8, 0.2, 1],
+                        }}
+                      />
+                      <div
+                        className="relative z-10 overflow-hidden rounded-none bg-black"
+                        style={{ borderRadius: 0 }}
+                      >
+                        <StreamPreview playbackUrl={stream.playbackUrl} />
+                        <span
+                          className={`absolute left-3 top-3 rounded-sm px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
+                            offline
+                              ? "bg-[#2b302e] text-slate-100"
+                              : "bg-red-900/90 text-white"
+                          }`}
+                        >
+                          {offline ? "Offline · time remaining" : "Live"}
                         </span>
-                      )}
-                    </div> */}
-                  </div>
-                </article>
+                      </div>
+                    </div>
+                    <div className="pt-3">
+                      <div className="flex items-center justify-between gap-3 text-xs text-[var(--muted)]">
+                        <span className="truncate">{stream.title}</span>
+                        <span className="shrink-0">
+                          {formatRate(stream.ratePerMinute)}
+                        </span>
+                      </div>
+                    </div>
+                  </Link>
+                </motion.article>
               );
             })}
           </div>
@@ -232,7 +269,7 @@ export default function HomePage() {
               <span
                 key={dot}
                 aria-hidden="true"
-                className="size-2 animate-bounce rounded-full bg-[var(--action)]"
+                className="size-2 animate-bounce rounded-full bg-[var(--brand)]"
                 style={{ animationDelay: `${dot * 140}ms` }}
               />
             ))}

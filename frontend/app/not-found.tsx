@@ -16,7 +16,7 @@ export default function NotFound() {
         <nav aria-label="Recovery links" className="mt-6 flex flex-wrap gap-3">
           <Link
             href="/"
-            className="rounded-sm bg-[var(--action)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] hover:bg-[var(--brand-hover)]"
+            className="rounded-sm bg-[var(--brand)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)]"
           >
             Browse streams
           </Link>

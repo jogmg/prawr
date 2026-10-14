@@ -1,6 +1,6 @@
 "use client";
 
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Copy, Info, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import ReactPlayer from "react-player/lazy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -46,6 +46,15 @@ const DURATION_UNITS = {
   hours: 60 * 60,
 } as const;
 type DurationUnit = keyof typeof DURATION_UNITS;
+
+function showWatchGuide(streamId: string) {
+  toast.info("New to watching?", {
+    id: `watch-start-guide-${streamId}`,
+    description:
+      "Connect your wallet, open Wallet funds, and use Add funds to deposit Arc USDC into your viewing balance. Then select Authorize watch session and sign the message (this does not charge you). Choose a viewing duration, approve the USDC payment, and press Play. Unused prepaid time is not refunded.",
+    duration: Infinity,
+  });
+}
 
 export default function WatchPage({ params }: { params: { slug: string } }) {
   const queryClient = useQueryClient();
@@ -157,6 +166,11 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
       },
     });
   }, [balancesFailed, refetchBalances]);
+
+  useEffect(() => {
+    if (!stream) return;
+    showWatchGuide(stream.id);
+  }, [stream?.id]);
 
   const applyPendingPlaybackTime = () => {
     const player = playerRef.current;
@@ -711,20 +725,18 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
   return (
     <main className="min-h-screen px-4 pb-12 sm:px-6">
       <div className="mx-auto max-w-[1440px] pt-5 sm:pt-7">
-        <div className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-          <div className="min-w-0">
-            <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
-              <span>{stream.category}</span>
-              <span aria-hidden="true">·</span>
-              <span title={stream.creatorId}>
-                Created by {shortenWalletAddress(stream.creatorId)}
-              </span>
-            </div>
-            <h1 className="truncate text-xl font-semibold text-[var(--text)] sm:text-2xl">
-              {stream.title}
-            </h1>
-          </div>
-          <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
+          <span>{stream.category}</span>
+          <span aria-hidden="true">·</span>
+          <span title={stream.creatorId}>
+            Created by {shortenWalletAddress(stream.creatorId)}
+          </span>
+        </div>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+          <h1 className="min-w-0 flex-1 text-xl font-semibold text-[var(--text)] sm:text-2xl">
+            {stream.title}
+          </h1>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span
               className={`inline-flex items-center gap-2 rounded-sm border px-2.5 py-1 text-xs font-medium ${
                 streamNotLive
@@ -754,11 +766,28 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
               )}
               {showViewingPanel ? "Hide viewing panel" : "Show viewing panel"}
             </button>
+            <button
+              type="button"
+              onClick={() => showWatchGuide(stream.id)}
+              aria-label="Show watching instructions"
+              title="Show watching instructions"
+              className="grid size-9 shrink-0 place-items-center rounded-sm border border-[var(--panel-border)] text-[var(--muted)] transition hover:border-[var(--brand-hover)] hover:text-[var(--brand)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand)]"
+            >
+              <Info size={16} aria-hidden="true" />
+            </button>
           </div>
         </div>
 
+        {showViewingPanel && (
+          <button
+            type="button"
+            aria-label="Close viewing panel"
+            onClick={() => setShowViewingPanel(false)}
+            className="fixed inset-0 z-[65] bg-black/65 lg:hidden"
+          />
+        )}
         <div
-          className={`grid items-start gap-5 ${
+          className={`relative grid items-start gap-5 transition-[grid-template-columns] duration-300 ease-out lg:overflow-x-clip ${
             showViewingPanel
               ? "lg:grid-cols-[minmax(0,1fr)_320px]"
               : "lg:grid-cols-1"
@@ -824,17 +853,39 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                     type="button"
                     onClick={() => void handleResumeSession()}
                     disabled={!stream.playbackUrl}
-                    className="min-h-10 rounded-sm bg-[var(--action)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-h-10 rounded-sm bg-[var(--brand)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Resume session
                   </button>
                 )}
-              <span className="text-sm tabular-nums text-[var(--muted)]">
-                Video position {Math.floor(playbackSeconds / 60)}:
-                {String(Math.floor(playbackSeconds) % 60).padStart(2, "0")}
-              </span>
+              <div className="flex flex-1 items-center justify-between gap-2">
+                <p className="text-sm tabular-nums text-[var(--muted)]">
+                  Video position {Math.floor(playbackSeconds / 60)}:
+                  {String(Math.floor(playbackSeconds) % 60).padStart(2, "0")}
+                </p>
+                <button
+                  type="button"
+                  aria-label="Copy link"
+                  title="Copy link"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(
+                        `${window.location.origin}/watch/${encodeURIComponent(
+                          stream.id
+                        )}`
+                      );
+                      toast.info("Link copied");
+                    } catch {
+                      toast.error("Could not copy link");
+                    }
+                  }}
+                  className="inline-flex size-9 items-center justify-center rounded-sm text-[var(--muted)] transition hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+                >
+                  <Copy size={16} aria-hidden="true" />
+                </button>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--panel-border)] py-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm">
               <span className="text-[var(--muted)]">Price per minute</span>
               <span className="font-medium text-[var(--text)]">
                 ${stream.ratePerMinute.toFixed(3)} USDC
@@ -844,8 +895,115 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
 
           <aside
             id="watch-viewing-panel"
-            className={`${showViewingPanel ? "" : "hidden"} min-w-0 space-y-4`}
+            aria-hidden={!showViewingPanel}
+            inert={!showViewingPanel}
+            className={`fixed inset-y-0 right-0 z-[70] w-[min(90vw,380px)] overflow-y-auto border-l border-[var(--panel-border)] bg-[var(--background)] p-4 transition-transform duration-300 ease-out sm:p-5 lg:inset-auto lg:top-0 lg:z-auto lg:w-[320px] lg:overflow-visible lg:border-0 lg:bg-transparent lg:p-0 ${
+              showViewingPanel
+                ? "translate-x-0 lg:relative"
+                : "pointer-events-none translate-x-full lg:absolute lg:right-0"
+            } min-w-0 space-y-4`}
           >
+            <div className="flex items-center justify-between border-b border-[var(--panel-border)] pb-3 lg:hidden">
+              <h2 className="text-sm font-semibold text-[var(--text)]">
+                Viewing panel
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowViewingPanel(false)}
+                aria-label="Close viewing panel"
+                className="grid size-9 place-items-center rounded-sm border border-[var(--panel-border)] text-[var(--muted)] hover:text-[var(--text)]"
+              >
+                <PanelRightClose size={16} aria-hidden="true" />
+              </button>
+            </div>
+            <details className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface)]">
+              <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-[var(--muted)] focus-visible:outline-offset-[-2px]">
+                Wallet funds
+              </summary>
+              <div className="space-y-3 border-t border-[var(--panel-border)] p-4 text-sm">
+                {!address ? (
+                  <p className="text-[var(--muted)]">
+                    Connect a wallet to view funds or add money for viewing.
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[var(--muted)]">
+                        Wallet balance
+                      </span>
+                      <span className="text-right text-[var(--text)]">
+                        {balancesQuery.isPending
+                          ? "Loading…"
+                          : balancesQuery.isError
+                          ? "Unavailable"
+                          : walletUsdcBalance === null
+                          ? "Unavailable"
+                          : `${walletUsdcBalance} USDC`}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[var(--muted)]">
+                        Available for viewing
+                      </span>
+                      <span className="text-right text-[var(--text)]">
+                        {balancesQuery.isPending
+                          ? "Loading…"
+                          : balancesQuery.isError
+                          ? "Unavailable"
+                          : gatewayBalance === null
+                          ? "Unavailable"
+                          : `${gatewayBalance} USDC`}
+                      </span>
+                    </div>
+                    <label className="block text-xs text-[var(--muted)]">
+                      Amount to add (USDC)
+                      <input
+                        type="number"
+                        value={depositAmount}
+                        onChange={(event) =>
+                          setDepositAmount(event.target.value)
+                        }
+                        min="0.01"
+                        step="0.01"
+                        className="mt-1 min-h-10 w-full rounded-sm border border-[var(--panel-border)] bg-[var(--background)] px-3 text-sm text-[var(--text)]"
+                      />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDeposit}
+                        disabled={
+                          gatewayDeposit.isPending ||
+                          gatewayWithdrawal.isPending ||
+                          !walletClient ||
+                          Number(depositAmount) <= 0
+                        }
+                        className="min-h-10 rounded-sm bg-[var(--brand)] px-3 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:opacity-50"
+                      >
+                        {gatewayDeposit.isPending ? "Adding…" : "Add funds"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleWithdraw}
+                        disabled={
+                          gatewayWithdrawal.isPending ||
+                          gatewayDeposit.isPending ||
+                          !walletClient ||
+                          !gatewayBalance ||
+                          Number(depositAmount) <= 0 ||
+                          Number(depositAmount) > Number(gatewayBalance)
+                        }
+                        className="min-h-10 rounded-sm border border-[var(--panel-border)] px-3 text-sm text-[var(--text)] transition hover:border-[var(--brand-hover)] disabled:opacity-50"
+                      >
+                        {gatewayWithdrawal.isPending
+                          ? "Withdrawing…"
+                          : "Withdraw"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </details>
             <section className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface)] p-4 sm:p-5">
               <h2 className="text-sm font-semibold text-[var(--text)]">
                 Viewing
@@ -919,7 +1077,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                     type="button"
                     onClick={handleAuthorizeSession}
                     disabled={isSigning || !address || !stream.playbackUrl}
-                    className="mt-5 min-h-11 w-full rounded-sm bg-[var(--action)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="mt-5 min-h-11 w-full rounded-sm bg-[var(--brand)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isSigning
                       ? "Check your wallet…"
@@ -946,7 +1104,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                       blockQuote.seconds === 0 ||
                       !stream.playbackUrl
                     }
-                    className="mt-5 min-h-11 w-full rounded-sm bg-[var(--action)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="mt-5 min-h-11 w-full rounded-sm bg-[var(--brand)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Choose viewing time
                   </button>
@@ -970,104 +1128,19 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                 </p>
               )}
             </section>
-
-            <details className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface)]">
-              <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-[var(--muted)] focus-visible:outline-offset-[-2px]">
-                Wallet funds
-              </summary>
-              <div className="space-y-3 border-t border-[var(--panel-border)] p-4 text-sm">
-                {!address ? (
-                  <p className="text-[var(--muted)]">
-                    Connect a wallet to view funds or add money for viewing.
-                  </p>
-                ) : (
-                  <>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-[var(--muted)]">
-                        Wallet balance
-                      </span>
-                      <span className="text-right text-[var(--text)]">
-                        {balancesQuery.isPending
-                          ? "Loading…"
-                          : balancesQuery.isError
-                          ? "Unavailable"
-                          : walletUsdcBalance === null
-                          ? "Unavailable"
-                          : `${walletUsdcBalance} USDC`}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-[var(--muted)]">
-                        Available for viewing
-                      </span>
-                      <span className="text-right text-[var(--text)]">
-                        {balancesQuery.isPending
-                          ? "Loading…"
-                          : balancesQuery.isError
-                          ? "Unavailable"
-                          : gatewayBalance === null
-                          ? "Unavailable"
-                          : `${gatewayBalance} USDC`}
-                      </span>
-                    </div>
-                    <label className="block text-xs text-[var(--muted)]">
-                      Amount to add (USDC)
-                      <input
-                        type="number"
-                        value={depositAmount}
-                        onChange={(event) =>
-                          setDepositAmount(event.target.value)
-                        }
-                        min="0.01"
-                        step="0.01"
-                        className="mt-1 min-h-10 w-full rounded-sm border border-[var(--panel-border)] bg-[var(--background)] px-3 text-sm text-[var(--text)]"
-                      />
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={handleDeposit}
-                        disabled={
-                          gatewayDeposit.isPending ||
-                          gatewayWithdrawal.isPending ||
-                          !walletClient ||
-                          Number(depositAmount) <= 0
-                        }
-                        className="min-h-10 rounded-sm bg-[var(--action)] px-3 text-sm font-semibold text-[#1c1f1e] disabled:opacity-50"
-                      >
-                        {gatewayDeposit.isPending ? "Adding…" : "Add funds"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleWithdraw}
-                        disabled={
-                          gatewayWithdrawal.isPending ||
-                          gatewayDeposit.isPending ||
-                          !walletClient ||
-                          !gatewayBalance ||
-                          Number(depositAmount) <= 0 ||
-                          Number(depositAmount) > Number(gatewayBalance)
-                        }
-                        className="min-h-10 rounded-sm border border-[var(--panel-border)] px-3 text-sm text-[var(--text)] disabled:opacity-50"
-                      >
-                        {gatewayWithdrawal.isPending
-                          ? "Withdrawing…"
-                          : "Withdraw"}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </details>
           </aside>
         </div>
       </div>
       {showPayModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/75 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/75 p-4"
+          onClick={() => setShowPayModal(false)}
+        >
           <section
             role="dialog"
             aria-modal="true"
             aria-labelledby="payment-modal-title"
+            onClick={(event) => event.stopPropagation()}
             className="my-auto w-full max-w-md rounded-sm border border-[var(--panel-border)] bg-[var(--surface)] p-5 shadow-2xl sm:p-6"
           >
             <div className="flex items-start justify-between gap-4">
@@ -1087,9 +1160,9 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
                 onClick={() => setShowPayModal(false)}
                 disabled={paidBlockMutation.isPending}
                 aria-label="Close payment dialog"
-                className="rounded-sm px-2 text-xl leading-none text-[var(--muted)] hover:text-white disabled:opacity-50"
+                className="grid size-9 shrink-0 place-items-center rounded-sm text-[var(--muted)] hover:text-white disabled:opacity-50"
               >
-                &times;
+                <X size={18} aria-hidden="true" />
               </button>
             </div>
             <div className="mt-5 grid grid-cols-2 gap-3">
@@ -1164,7 +1237,7 @@ export default function WatchPage({ params }: { params: { slug: string } }) {
               disabled={
                 !durationValid || paidBlockMutation.isPending || !address
               }
-              className="mt-5 min-h-11 w-full rounded-sm bg-[var(--action)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-5 min-h-11 w-full rounded-sm bg-[var(--brand)] px-4 py-2.5 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {paidBlockMutation.isPending
                 ? "Waiting for wallet approval…"

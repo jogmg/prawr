@@ -1,17 +1,18 @@
 "use client";
 
+import { format } from "date-fns";
+import { ChevronLeft, ChevronRight, Copy, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { useAccount, useSignTypedData, useWalletClient } from "wagmi";
-import type { CreatorPayoutSummary } from "../lib/prawr-api";
+import type { GatewayWithdrawalSigner } from "../lib/gateway-client";
 import {
   useCreatorSummary,
   useWalletGatewayBalances,
 } from "../lib/hooks/use-creator-queries";
-import { useCreateStream, useStreams } from "../lib/hooks/use-stream-queries";
-import type { GatewayWithdrawalSigner } from "../lib/gateway-client";
 import { useGatewayWithdrawal } from "../lib/hooks/use-gateway-mutations";
+import { useCreateStream, useStreams } from "../lib/hooks/use-stream-queries";
+import type { CreatorPayoutSummary } from "../lib/prawr-api";
 
 const fallbackSummary: CreatorPayoutSummary = {
   creatorWallet: "",
@@ -311,7 +312,7 @@ export default function CreatorDashboardPage() {
               onClick={() => {
                 setShowCreateForm(true);
               }}
-              className="min-h-10 rounded-sm border border-[var(--panel-border)] px-4 py-2 text-sm font-medium text-[var(--text)] hover:border-[var(--brand-hover)] disabled:opacity-50"
+              className="min-h-10 rounded-sm border border-[var(--panel-border)] px-4 py-2 text-sm font-medium text-[var(--text)] transition hover:border-[var(--brand-hover)] disabled:opacity-50"
             >
               New stream
             </button>
@@ -346,33 +347,56 @@ export default function CreatorDashboardPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleCreatorStreams.map((stream) => (
-                    <tr
-                      key={stream.id}
-                      className="border-t border-[var(--panel-border)]"
-                    >
-                      <td className="py-3 pr-4 font-medium text-[var(--text)]">
-                        {stream.title}
-                      </td>
-                      <td className="py-3 pr-4 text-[var(--muted)]">
-                        {stream.category}
-                      </td>
-                      <td className="py-3 pr-4 tabular-nums text-[var(--text)]">
-                        ${stream.ratePerMinute.toFixed(3)} USDC
-                      </td>
-                      <td className="py-3 pr-4 capitalize text-[var(--muted)]">
-                        {stream.status}
-                      </td>
-                      <td className="py-3">
-                        <a
-                          className="text-[var(--action)] hover:text-[var(--brand-hover)]"
-                          href={`/watch/${encodeURIComponent(stream.id)}`}
-                        >
-                          Open
-                        </a>
-                      </td>
-                    </tr>
-                  ))}
+                  {visibleCreatorStreams.map((stream) => {
+                    const watchPath = `/watch/${encodeURIComponent(stream.id)}`;
+                    return (
+                      <tr
+                        key={stream.id}
+                        className="border-t border-[var(--panel-border)]"
+                      >
+                        <td className="py-3 pr-4 font-medium text-[var(--text)]">
+                          {stream.title}
+                        </td>
+                        <td className="py-3 pr-4 text-[var(--muted)]">
+                          {stream.category}
+                        </td>
+                        <td className="py-3 pr-4 tabular-nums text-[var(--text)]">
+                          ${stream.ratePerMinute.toFixed(3)} USDC
+                        </td>
+                        <td className="py-3 pr-4 capitalize text-[var(--muted)]">
+                          {stream.status}
+                        </td>
+                        <td className="py-3">
+                          <div className="flex items-center gap-3">
+                            <a
+                              className="text-[var(--brand)] hover:text-[var(--brand-hover)]"
+                              href={watchPath}
+                            >
+                              Open
+                            </a>
+                            <button
+                              type="button"
+                              aria-label={`Copy link for ${stream.title}`}
+                              title="Copy link"
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(
+                                    `${window.location.origin}${watchPath}`
+                                  );
+                                  toast.info("Link copied");
+                                } catch {
+                                  toast.error("Could not copy link");
+                                }
+                              }}
+                              className="inline-flex size-9 items-center justify-center rounded-sm text-[var(--muted)] transition hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+                            >
+                              <Copy size={16} aria-hidden="true" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               <ListPagination
@@ -409,7 +433,7 @@ export default function CreatorDashboardPage() {
                   balancesQuery.isError
                 }
                 onClick={handleWithdraw}
-                className="min-h-10 rounded-sm bg-[var(--action)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                className="min-h-10 rounded-sm bg-[var(--brand)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {withdrawalMutation.isPending
                   ? "Check your wallet…"
@@ -431,34 +455,47 @@ export default function CreatorDashboardPage() {
               withdrawals.
             </p>
           ) : summary.receipts.length ? (
-            <ul className="border-t border-[var(--panel-border)]">
-              {visibleReceipts.map((payment) => {
-                const paidStream = streams.find(
-                  (stream) => stream.id === payment.streamId
-                );
-                return (
-                  <li
-                    key={payment.receiptId}
-                    className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-[var(--panel-border)] py-3 last:border-b-0"
-                  >
-                    <span className="min-w-0 truncate text-sm text-[var(--text)]">
-                      {paidStream?.title ?? "Stream payment"}
-                    </span>
-                    <span className="ml-auto flex shrink-0 items-center gap-4 text-sm">
-                      <time
-                        className="text-[var(--muted)]"
-                        dateTime={payment.createdAt}
+            <div className="overflow-x-auto border-t border-[var(--panel-border)]">
+              <table className="w-full min-w-[620px] text-left text-sm">
+                <thead className="text-xs text-[var(--muted)]">
+                  <tr>
+                    <th className="w-[60%] py-3 pr-4 font-medium">Stream</th>
+                    <th className="w-[25%] py-3 pr-4 font-medium">Date</th>
+                    <th className="w-[15%] py-3 text-right font-medium">
+                      Earnings
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleReceipts.map((payment) => {
+                    const paidStream = streams.find(
+                      (stream) => stream.id === payment.streamId
+                    );
+                    return (
+                      <tr
+                        key={payment.receiptId}
+                        className="border-t border-[var(--panel-border)]"
                       >
-                        {new Date(payment.createdAt).toLocaleDateString()}
-                      </time>
-                      <span className="min-w-20 text-right font-medium tabular-nums text-[var(--text)]">
-                        ${Number(payment.charge).toFixed(2)}
-                      </span>
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
+                        <td className="py-3 pr-4 font-medium text-[var(--text)]">
+                          {paidStream?.title ?? "Stream payment"}
+                        </td>
+                        <td className="py-3 pr-4 text-[var(--muted)]">
+                          <time dateTime={payment.createdAt}>
+                            {format(
+                              new Date(payment.createdAt),
+                              "MMM d, yyyy, h:mm a"
+                            )}
+                          </time>
+                        </td>
+                        <td className="py-3 text-right font-medium tabular-nums text-[var(--text)]">
+                          ${Number(payment.charge).toFixed(3)} USDC
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           ) : (
             <p className="border-t border-[var(--panel-border)] py-5 text-sm text-[var(--muted)]">
               No earnings recorded yet.
@@ -475,11 +512,15 @@ export default function CreatorDashboardPage() {
         </section>
       </div>
       {showCreateForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/75 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/75 p-4"
+          onClick={() => setShowCreateForm(false)}
+        >
           <form
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-stream-title"
+            onClick={(event) => event.stopPropagation()}
             onSubmit={handleCreateStream}
             onKeyDown={(event) => {
               if (event.key === "Escape" && !createStreamMutation.isPending)
@@ -503,9 +544,9 @@ export default function CreatorDashboardPage() {
                 type="button"
                 aria-label="Close create stream form"
                 onClick={() => setShowCreateForm(false)}
-                className="px-2 text-xl text-[var(--muted)] hover:text-white"
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-sm text-[var(--muted)] hover:text-white"
               >
-                ×
+                <X size={18} aria-hidden="true" />
               </button>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
@@ -561,14 +602,14 @@ export default function CreatorDashboardPage() {
               <button
                 type="button"
                 onClick={() => setShowCreateForm(false)}
-                className="min-h-10 rounded-sm border border-[var(--panel-border)] px-4 py-2 text-sm text-[var(--text)]"
+                className="min-h-10 rounded-sm border border-[var(--panel-border)] px-4 py-2 text-sm text-[var(--text)] transition hover:border-[var(--brand-hover)]"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={createStreamMutation.isPending || !address}
-                className="min-h-10 rounded-sm bg-[var(--action)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] disabled:opacity-50"
+                className="min-h-10 rounded-sm bg-[var(--brand)] px-4 py-2 text-sm font-semibold text-[#1c1f1e] transition hover:bg-[var(--brand-hover)] disabled:opacity-50"
               >
                 {createStreamMutation.isPending
                   ? "Creating..."

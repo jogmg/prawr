@@ -1,30 +1,49 @@
 # Prawr
 
-Prawr is a decentralized micropayment streaming MVP built on Arc. The project is intentionally structured as a monorepo with three main areas:
+Prawr is a live-streaming platform project built around small, pay-as-you-watch payments. It uses Arc and Circle Gateway for its current payment flow.
 
-- backend: NestJS service for creators, streams, viewer sessions, receipts, and settlement aggregation
-- frontend: Next.js app for the public viewer homepage and protected creator dashboard
-- contracts: Solidity/Foundry contract scaffolding for settlement and creator payout logic
+## Goal
 
-## Current status
+The goal is to let creators earn directly from viewers, one small payment at a time. A creator should be able to start a live broadcast, set a price, and share it through Prawr. Viewers should be able to discover streams, choose how long to watch, and pay without needing a large subscription.
 
-The Arc Testnet MVP currently supports Mongo-backed stream discovery, creator stream management, Twitch and YouTube embeds, HLS (`.m3u8`), and direct MP4/WebM playback. Wallet-signed session caps, per-second Circle Gateway x402 payments during active playback, and persisted payment receipts apply to all supported player types. Creator summaries read those receipts, and Gateway payments are addressed to the stream creator's wallet.
+## Project Status
 
-Video hosting and live ingest are not implemented. Creators provide a public Twitch or YouTube URL, an HLS playlist URL, or a direct MP4/WebM URL. HLS hosts must permit cross-origin playback from the Prawr frontend, and Twitch/YouTube content must allow embedding. The player pauses metering while paused or buffering. The settlement contract remains scaffolding; Gateway receipts are not rolled into contract payouts.
+The current MVP stores streams in MongoDB and supports Twitch and YouTube embeds, HLS (`.m3u8`), and direct MP4/WebM playback. Viewers sign a session authorization with their wallet. Circle Gateway x402 payments buy viewing time, and the backend records payment receipts. Metering pauses when the player is paused or buffering.
 
-## Getting started
+Creators currently provide an existing playback URL. This means that URL is sent to the browser and can be found in API responses, player details, or network requests. HLS sources must allow playback from the Prawr site, and Twitch/YouTube streams must allow embedding.
+
+Prawr does not yet host video or provide its own creator ingest. A managed live-video delivery integration is not implemented. The current app implementation targets Arc Mainnet, but it is still an MVP and should not be treated as production-ready.
+
+### Original Payment Plan
+
+The first payment design aimed to send tiny payments directly from the viewer's wallet to the creator as each second of video was watched. The goal was to avoid asking viewers to deposit money into a separate balance before watching, and to make payments happen in the background. A settlement contract was partially explored, but research and implementation exposed several practical challenges:
+
+- A wallet may ask the viewer to approve each transaction. Repeating that every second would interrupt playback; allowing transactions without repeated prompts requires additional wallet or smart-contract support.
+- Blockchain transactions take time to submit and confirm, so they cannot reliably settle once per second in step with playback.
+- Transaction fees and on-chain overhead can be larger than the tiny per-second payment itself.
+- The flow depends on the viewer's wallet, network connection, and available funds. A rejected or delayed transaction makes it difficult to decide whether playback should continue and how much the creator is owed.
+- Tracking retries, failed or pending transactions, and the exact amount of video watched adds complexity and can lead to payment or accounting mismatches.
+
+The current MVP uses Circle Gateway x402 to batch small payment requests and grant prepaid viewing time. Viewers fund a Gateway balance first, so this is not the original no-deposit design. The Solidity contract remains a separate scaffold and does not process current Gateway payments or receipts.
+
+## In Progress And Next
+
+These are planned improvements, not features that the current app already provides:
+
+- **Direct creator broadcasting:** Let creators stream to Prawr from their preferred broadcasting tools instead of relying on public third-party playback URLs. Prawr would manage the live ingest and delivery flow, giving the platform more control over stream access and paid viewing.
+- **Protected playback links:** Keep the provider's permanent playback ID and creator ingest key off public APIs. After checking a viewer's session and paid time, the backend would issue a short-lived signed playback token. The video provider must enforce that token for the playlist and every media segment. This makes copied links expire; it does not make playback impossible to record.
+- **Live status updates:** Check the video provider for active broadcasts and update stream status so the homepage lists streams that are actually live. Faster updates could use provider webhooks or server notifications instead of relying only on periodic checks.
+- **Creator and stream authorization:** Verify creator ownership on server-side actions, protect ingest-key retrieval and rotation, and limit access to session and payment operations. A connected wallet in the interface alone is not server authorization.
+- **Production payment and settlement:** Validate the payment flow with production-grade configuration, improve monitoring and failure handling, and decide whether the separate settlement contract should be completed or retired.
+- **Operational controls:** Add rate limits, abuse monitoring, audit logs, and clear handling for provider or payment outages before opening the service broadly.
+
+## Run Locally
+
+You need Node.js 20 or newer and MongoDB. Install dependencies and copy the example settings:
 
 ```bash
 npm install
-npm run dev:backend
-npm run dev:frontend
 ```
-
-## Arc Testnet setup
-
-The frontend wallet targets Arc Testnet (chain ID `5042002`). Before using the
-wallet or deploying the settlement contract, copy the app examples and fill in
-your local values:
 
 ```powershell
 Copy-Item backend/.env.example backend/.env
@@ -32,82 +51,27 @@ Copy-Item frontend/.env.example frontend/.env
 Copy-Item contracts/.env.example contracts/.env
 ```
 
-Start MongoDB locally or set `MONGODB_URI` in `backend/.env`. Nest loads this
-file through `ConfigModule`; the API defaults to port `3001`.
-
-`frontend/.env` is read by Next.js. Set these values there:
-
-- `NEXT_PUBLIC_SITE_URL` is the public HTTPS origin of the deployed frontend.
-  Set it to the production domain so canonical metadata and the sitemap use
-  the correct host; do not leave the example value in a deployment.
-- `NEXT_PUBLIC_ARC_RPC_URL` is the public Arc Testnet RPC used by wagmi/viem.
-  The default is `https://rpc.testnet.arc.io`; use a provider URL instead if
-  you have one.
-- `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is the project ID for WalletConnect
-  wallet discovery. Create one in the [Reown dashboard](https://dashboard.reown.com/).
-- `NEXT_PUBLIC_PRAWR_SETTLEMENT_ADDRESS` is the deployed Prawr settlement
-  contract address. Leave it empty until deployment; payout actions stay
-  disabled without it.
-- `NEXT_PUBLIC_API_BASE_URL` points the frontend to the NestJS API.
-
-Set `GATEWAY_API_KEY` and the optional fallback recipient in `backend/.env`,
-with `GATEWAY_FACILITATOR_URL=https://gateway-api-testnet.circle.com`. Keep
-Circle credentials server-side; never use a `NEXT_PUBLIC_` variable for a
-secret. Gateway payments are sent to each stream's `creatorWallet`, so create a
-test stream with the connected creator wallet address.
-
-`contracts/.env` is used only when deploying from the contracts directory with
-Arc Foundry:
-
-- `ARC_TESTNET_RPC_URL` is the endpoint used to deploy and query Arc Testnet.
-- `PRIVATE_KEY` is the private key for a dedicated, disposable testnet deployer
-  wallet. Generate a new key with `arc-cast wallet new`; never use a mainnet
-  wallet key, commit this value, or send it to the browser.
-- `PRAWR_SETTLEMENT_ADDRESS` records the deployment output for your own notes.
-  The deploy command does not consume it.
-
-Install [Arc Foundry](https://docs.arc.io/arc/tutorials/install-arc-foundry),
-then get testnet USDC for the deployer from the [Circle faucet](https://faucet.circle.com/)
-(select Arc Testnet). Arc uses native USDC for transaction value and gas. For
-this contract, values passed as `msg.value` use 18 decimals; the optional USDC
-ERC-20 interface at `0x3600000000000000000000000000000000000000` uses 6 decimals.
-
-From `contracts/`, load the local settings and deploy:
+Start MongoDB, then run the backend and frontend in separate terminals:
 
 ```bash
-set -a
-source .env
-set +a
-arc-forge test --network arc
-arc-forge script script/DeployPrawrSettlement.s.sol:DeployPrawrSettlement \
-	--rpc-url "$ARC_TESTNET_RPC_URL" \
-	--private-key "$PRIVATE_KEY" \
-	--broadcast
+npm run dev:backend
+npm run dev:frontend
 ```
 
-Copy the `Deployed to` address from the output into
-`frontend/.env` as `NEXT_PUBLIC_PRAWR_SETTLEMENT_ADDRESS`, then restart the
-frontend so Next.js includes the value. Confirm the deployment on the [Arc
-Testnet Explorer](https://explorer.testnet.arc.io/).
+The backend defaults to port `3001`. See [backend/README.md](backend/README.md), [frontend/README.md](frontend/README.md), and [contracts/README.md](contracts/README.md) for component-specific setup and commands.
 
-Connect the creator wallet in `/creator` and use **Create Stream** to save a
-title, category, rate, and publicly reachable Twitch, YouTube, HLS, MP4, or
-WebM playback URL. The
-homepage and watch route then use the Mongo-backed stream ID. Each successful
-Gateway-paid second while the video is playing creates a receipt in MongoDB.
-This is testnet code only and has not been validated with live Circle
-credentials; use testnet funds only. The Arc contract deployment settings are
-separate and do not participate in the current Gateway watch flow.
+## Network And Secrets
 
-## Architecture highlights
+The current app implementation targets Arc Mainnet. Keep the frontend RPC, Gateway facilitator URL and chain identifier, and wallet settings on the same network. If you intentionally switch the app to Arc Testnet, change all related settings together and use Testnet funds. Do not mix Mainnet and Testnet settings. The separate Solidity contract scaffold has Testnet deployment instructions and is not part of the current Gateway payment flow.
 
-- Public viewer homepage and watch flow in Next.js
-- Creator dashboard under /creator
-- Protected stream access and monetization flow
-- Arc USDC settlement compatibility
-- Circle Gateway Nanopayments preferred for batched micropayments
-- Server-side metering and receipt validation for correctness
+Keep Circle API credentials, database credentials, provider credentials, signing keys, and wallet private keys on the server or in deployment secrets. Never put them in `NEXT_PUBLIC_` variables or commit real secrets. The frontend variables are public by design.
 
-## Documentation
+## Project Areas
 
-See the docs folder for the architecture and payment flow notes.
+- [Backend](backend/README.md): NestJS API, MongoDB records, session controls, payment verification, and receipts.
+- [Frontend](frontend/README.md): Next.js viewer experience, creator dashboard, wallet connection, and player.
+- [Contracts](contracts/README.md): Foundry/Solidity settlement scaffold and deployment notes.
+
+## Author
+
+jogmg <joattah3@gmail.com>

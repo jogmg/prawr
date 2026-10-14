@@ -36,7 +36,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <ConnectKitProvider
           mode="dark"
           customTheme={{
-            "--ck-accent-color": "#a27035",
+            "--ck-accent-color": "#ddca7d",
             "--ck-accent-text-color": "#ffffff",
             "--ck-border-radius": 12,
           }}

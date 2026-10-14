@@ -8,13 +8,13 @@ const config: Config = {
         brand: {
           50: "#f5eedb",
           100: "#d8bd7c",
-          500: "#a27035",
-          600: "#b88b4a",
-          700: "#ddca7d",
+          500: "#ddca7d",
+          600: "#b69f54",
+          700: "#927b38",
         },
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(162, 112, 53, 0.28)",
+        glow: "0 0 0 1px rgba(221, 202, 125, 0.28)",
       },
     },
   },

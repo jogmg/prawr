@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Creator dashboard",
+  title: "Creator",
   description: "Manage your Prawr streams and creator payouts.",
   alternates: { canonical: "/creator" },
   robots: {

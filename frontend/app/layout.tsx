@@ -1,7 +1,21 @@
 import type { Metadata } from "next";
+import { DM_Sans, Space_Grotesk } from "next/font/google";
+import { Footer } from "./components/footer";
 import { Header } from "./components/header";
 import "./globals.css";
 import { Providers } from "./providers";
+
+const headingFont = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-heading",
+  display: "swap",
+});
+
+const bodyFont = DM_Sans({
+  subsets: ["latin"],
+  variable: "--font-body",
+  display: "swap",
+});
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
 
@@ -13,12 +27,12 @@ export const metadata: Metadata = {
       }
     : {}),
   title: {
-    default: "Prawr | Pay-per-second livestreams",
+    default: "Prawr",
     template: "%s | Prawr",
   },
   applicationName: "Prawr",
   description:
-    "Watch livestreams and pay only for the time you watch with Prawr, a decentralized micropayment streaming platform built on Arc.",
+    "Watch live streams and pay only for the time you watch. Prawr brings instant micropayments to creators and viewers on Arc.",
   keywords: [
     "Prawr",
     "pay-per-second streaming",
@@ -33,16 +47,16 @@ export const metadata: Metadata = {
     type: "website",
     locale: "en_US",
     siteName: "Prawr",
-    title: "Prawr | Pay-per-second livestreams",
+    title: "Prawr",
     description:
-      "Watch livestreams and pay only for the time you watch with Prawr, a decentralized micropayment streaming platform built on Arc.",
+      "Watch live streams and pay only for the time you watch. Prawr brings instant micropayments to creators and viewers on Arc.",
     ...(siteUrl ? { images: [{ url: "/assets/og-image" }] } : {}),
   },
   twitter: {
     card: siteUrl ? "summary_large_image" : "summary",
-    title: "Prawr | Pay-per-second livestreams",
+    title: "Prawr",
     description:
-      "Watch livestreams and pay only for the time you watch with Prawr, a decentralized micropayment streaming platform built on Arc.",
+      "Watch live streams and pay only for the time you watch. Prawr brings instant micropayments to creators and viewers on Arc.",
     ...(siteUrl ? { images: [{ url: "/assets/og-image" }] } : {}),
   },
   robots: {
@@ -64,11 +78,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html
+      lang="en"
+      className={`${headingFont.variable} ${bodyFont.variable} antialiased`}
+    >
       <body>
         <Providers>
           <Header />
           {children}
+          <Footer />
         </Providers>
       </body>
     </html>
