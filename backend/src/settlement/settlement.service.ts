@@ -31,9 +31,18 @@ export interface ReceiptRecord {
   creatorWallet: string;
   charge: string;
   transaction?: string;
+  transactionHash?: string;
   network?: string;
   createdAt: string;
 }
+
+const TRANSACTION_HASH_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+const GATEWAY_TRANSFER_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const GATEWAY_X402_API_URLS: Record<string, string> = {
+  "eip155:5042": "https://gateway-api.circle.com",
+  "eip155:5042002": "https://gateway-api-testnet.circle.com",
+};
 
 export interface SessionAuthorizationInput {
   streamId: string;
@@ -228,6 +237,62 @@ export class SettlementService {
     return this.receipts.map((receipt) => ({ ...receipt }));
   }
 
+  async getGatewayReceiptTransaction(receiptId: string): Promise<{
+    transactionHash: string | null;
+    status: string;
+  }> {
+    const receipt = this.gatewayReceiptModel
+      ? await this.gatewayReceiptModel.findOne({ receiptId }).exec()
+      : this.receipts.find((item) => item.receiptId === receiptId);
+
+    if (!receipt) throw new Error("Receipt not found.");
+
+    if (TRANSACTION_HASH_PATTERN.test(receipt.transactionHash ?? "")) {
+      return { transactionHash: receipt.transactionHash!, status: "confirmed" };
+    }
+
+    const apiUrl = receipt.network
+      ? GATEWAY_X402_API_URLS[receipt.network]
+      : undefined;
+    if (
+      !apiUrl ||
+      !GATEWAY_TRANSFER_ID_PATTERN.test(receipt.transaction ?? "")
+    ) {
+      return { transactionHash: null, status: "unavailable" };
+    }
+
+    const response = await fetch(
+      `${apiUrl}/v1/x402/transfers/${encodeURIComponent(receipt.transaction!)}`
+    );
+    if (!response.ok) {
+      if (response.status === 404) {
+        return { transactionHash: null, status: "received" };
+      }
+      throw new Error(`Gateway transfer lookup failed: ${response.status}`);
+    }
+
+    const transfer = (await response.json()) as {
+      status?: string;
+      txHash?: string | null;
+    };
+    const transactionHash = TRANSACTION_HASH_PATTERN.test(transfer.txHash ?? "")
+      ? transfer.txHash!
+      : null;
+
+    if (transactionHash && this.gatewayReceiptModel) {
+      const persistedReceipt = receipt as GatewayReceiptDocument;
+      persistedReceipt.transactionHash = transactionHash;
+      await persistedReceipt.save();
+    } else if (transactionHash) {
+      (receipt as ReceiptRecord).transactionHash = transactionHash;
+    }
+
+    return {
+      transactionHash,
+      status: transfer.status ?? "received",
+    };
+  }
+
   createPayoutClaim(creatorWallet: string, amount: string): PayoutClaimRecord {
     this.validateWalletAddress(creatorWallet, "creator");
 
@@ -310,6 +375,7 @@ export class SettlementService {
           creatorWallet: receipt.creatorWallet,
           charge: receipt.amount,
           transaction: receipt.transaction,
+          transactionHash: receipt.transactionHash,
           network: receipt.network,
           createdAt: new Date(
             receipt.get("createdAt") as string | Date

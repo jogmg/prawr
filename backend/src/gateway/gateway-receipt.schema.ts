@@ -27,6 +27,9 @@ export class GatewayReceipt {
   declare transaction?: string;
 
   @Prop()
+  declare transactionHash?: string;
+
+  @Prop()
   declare network?: string;
 }
 

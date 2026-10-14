@@ -1,7 +1,10 @@
 "use client";
 
+import { CHAIN_CONFIGS } from "@circle-fin/x402-batching/client";
+import { useQueries, type Query } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { ChevronLeft, ChevronRight, Copy, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, ExternalLink, X } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useAccount, useSignTypedData, useWalletClient } from "wagmi";
@@ -12,8 +15,20 @@ import {
 } from "../lib/hooks/use-creator-queries";
 import { useGatewayWithdrawal } from "../lib/hooks/use-gateway-mutations";
 import { useCreateStream, useStreams } from "../lib/hooks/use-stream-queries";
-import type { CreatorPayoutSummary } from "../lib/prawr-api";
+import {
+  getGatewayReceiptTransaction,
+  type CreatorPayoutSummary,
+  type GatewayReceiptTransaction,
+} from "../lib/prawr-api";
 
+const ARC_EXPLORER_URLS: Record<string, string> = {
+  [`eip155:${CHAIN_CONFIGS.arc.chain.id}`]:
+    CHAIN_CONFIGS.arc.chain.blockExplorers?.default?.url ??
+    "https://explorer.arc.io",
+  [`eip155:${CHAIN_CONFIGS.arcTestnet.chain.id}`]:
+    CHAIN_CONFIGS.arcTestnet.chain.blockExplorers?.default?.url ??
+    "https://testnet.arcscan.app",
+};
 const fallbackSummary: CreatorPayoutSummary = {
   creatorWallet: "",
   totalReceived: "0",
@@ -21,6 +36,8 @@ const fallbackSummary: CreatorPayoutSummary = {
   receipts: [],
   pendingClaims: [],
 };
+const GATEWAY_TRANSFER_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MIN_STREAM_RATE_PER_MINUTE = 0.001;
 const MAX_STREAM_RATE_PER_MINUTE = 100;
 const STREAMS_PER_PAGE = 8;
@@ -123,6 +140,23 @@ export default function CreatorDashboardPage() {
     (activeEarningsPage - 1) * EARNINGS_PER_PAGE,
     activeEarningsPage * EARNINGS_PER_PAGE
   );
+  const receiptTransactionQueries = useQueries({
+    queries: visibleReceipts.map((payment) => ({
+      queryKey: ["creator", "receipt-transaction", payment.receiptId],
+      queryFn: () => getGatewayReceiptTransaction(payment.receiptId),
+      enabled: GATEWAY_TRANSFER_ID_PATTERN.test(payment.transaction ?? ""),
+      staleTime: 15_000,
+      refetchInterval: (query: Query<GatewayReceiptTransaction, Error>) => {
+        const result = query.state.data;
+        return result?.transactionHash ||
+          result?.status === "failed" ||
+          result?.status === "unavailable"
+          ? false
+          : 15_000;
+      },
+      refetchIntervalInBackground: false,
+    })),
+  });
 
   useEffect(() => {
     if (streamsFailed)
@@ -368,12 +402,12 @@ export default function CreatorDashboardPage() {
                         </td>
                         <td className="py-3">
                           <div className="flex items-center gap-3">
-                            <a
+                            <Link
                               className="text-[var(--brand)] hover:text-[var(--brand-hover)]"
                               href={watchPath}
                             >
                               Open
-                            </a>
+                            </Link>
                             <button
                               type="button"
                               aria-label={`Copy link for ${stream.title}`}
@@ -456,21 +490,37 @@ export default function CreatorDashboardPage() {
             </p>
           ) : summary.receipts.length ? (
             <div className="overflow-x-auto border-t border-[var(--panel-border)]">
-              <table className="w-full min-w-[620px] text-left text-sm">
+              <table className="w-full min-w-[680px] text-left text-sm">
                 <thead className="text-xs text-[var(--muted)]">
                   <tr>
-                    <th className="w-[60%] py-3 pr-4 font-medium">Stream</th>
+                    <th className="w-[55%] py-3 pr-4 font-medium">Stream</th>
                     <th className="w-[25%] py-3 pr-4 font-medium">Date</th>
                     <th className="w-[15%] py-3 text-right font-medium">
                       Earnings
                     </th>
+                    <th className="py-3 pl-4 text-right font-medium">
+                      <span className="sr-only">Arc explorer</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleReceipts.map((payment) => {
+                  {visibleReceipts.map((payment, index) => {
                     const paidStream = streams.find(
                       (stream) => stream.id === payment.streamId
                     );
+                    const transactionHash =
+                      receiptTransactionQueries[index]?.data?.transactionHash ??
+                      payment.transactionHash ??
+                      null;
+                    const explorerUrl = payment.network
+                      ? ARC_EXPLORER_URLS[payment.network]
+                      : undefined;
+                    const transactionUrl =
+                      explorerUrl &&
+                      transactionHash &&
+                      /^0x[a-fA-F0-9]{64}$/.test(transactionHash)
+                        ? `${explorerUrl}/tx/${transactionHash}`
+                        : null;
                     return (
                       <tr
                         key={payment.receiptId}
@@ -489,6 +539,20 @@ export default function CreatorDashboardPage() {
                         </td>
                         <td className="py-3 text-right font-medium tabular-nums text-[var(--text)]">
                           ${Number(payment.charge).toFixed(3)} USDC
+                        </td>
+                        <td className="py-3 pl-4 text-right">
+                          {transactionUrl ? (
+                            <Link
+                              href={transactionUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              aria-label="View transaction on Arc explorer"
+                              title="View transaction on Arc explorer"
+                              className="inline-flex size-9 items-center justify-center rounded-sm text-[var(--muted)] transition hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+                            >
+                              <ExternalLink size={16} aria-hidden="true" />
+                            </Link>
+                          ) : null}
                         </td>
                       </tr>
                     );

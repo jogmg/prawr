@@ -10,6 +10,11 @@ export class SettlementController {
     return this.settlementService.getReceipts();
   }
 
+  @Get("receipts/:receiptId/transaction")
+  getReceiptTransaction(@Param("receiptId") receiptId: string) {
+    return this.settlementService.getGatewayReceiptTransaction(receiptId);
+  }
+
   @Get("summary/:creatorWallet")
   getCreatorSummary(@Param("creatorWallet") creatorWallet: string) {
     return this.settlementService.getCreatorPayoutSummary(creatorWallet);

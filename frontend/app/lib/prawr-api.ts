@@ -63,6 +63,9 @@ export type CreatorPayoutSummary = {
     viewerWallet: string;
     creatorWallet: string;
     charge: string;
+    transaction?: string;
+    transactionHash?: string;
+    network?: string;
     createdAt: string;
   }>;
   pendingClaims: Array<{
@@ -72,6 +75,11 @@ export type CreatorPayoutSummary = {
     status: "pending" | "claimed";
     createdAt: string;
   }>;
+};
+
+export type GatewayReceiptTransaction = {
+  transactionHash: string | null;
+  status: string;
 };
 
 export function buildSessionAuthorizationMessage({
@@ -401,6 +409,23 @@ export async function getCreatorPayoutSummary(
   }
 
   return response.json() as Promise<CreatorPayoutSummary>;
+}
+
+export async function getGatewayReceiptTransaction(
+  receiptId: string
+): Promise<GatewayReceiptTransaction> {
+  const response = await fetch(
+    `${API_BASE_URL}/settlement/receipts/${encodeURIComponent(
+      receiptId
+    )}/transaction`,
+    { cache: "no-store" }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Gateway transaction: ${response.status}`);
+  }
+
+  return response.json() as Promise<GatewayReceiptTransaction>;
 }
 
 export async function finalizePayoutClaim(payload: {

@@ -129,6 +129,67 @@ describe("SettlementService", () => {
     expect(summary.receipts[0]?.createdAt).toBe(createdAt.toISOString());
   });
 
+  it("returns a pending status until Circle batches the transfer", async () => {
+    const receipt = {
+      transaction: "1c7ecde7-341f-4bc4-a472-92780ddc5953",
+      network: "eip155:5042",
+      transactionHash: undefined,
+      save: jest.fn(),
+    };
+    const gatewayReceiptModel = {
+      findOne: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue(receipt),
+      }),
+    };
+    const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({ status: "received", txHash: null }),
+    } as unknown as Response);
+    const service = new SettlementService(gatewayReceiptModel as never);
+
+    try {
+      await expect(
+        service.getGatewayReceiptTransaction("receipt-1")
+      ).resolves.toEqual({ transactionHash: null, status: "received" });
+      expect(receipt.save).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("persists Circle's batch transaction hash when it becomes available", async () => {
+    const transactionHash = `0x${"a".repeat(64)}`;
+    const receipt = {
+      transaction: "1c7ecde7-341f-4bc4-a472-92780ddc5953",
+      network: "eip155:5042",
+      transactionHash: undefined as string | undefined,
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    const gatewayReceiptModel = {
+      findOne: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue(receipt),
+      }),
+    };
+    const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        status: "confirmed",
+        txHash: transactionHash,
+      }),
+    } as unknown as Response);
+    const service = new SettlementService(gatewayReceiptModel as never);
+
+    try {
+      await expect(
+        service.getGatewayReceiptTransaction("receipt-1")
+      ).resolves.toEqual({ transactionHash, status: "confirmed" });
+      expect(receipt.transactionHash).toBe(transactionHash);
+      expect(receipt.save).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("creates a pending withdrawal claim for the creator wallet", async () => {
     const service = new SettlementService();
     const creatorWallet = "0x1111111111111111111111111111111111111111";
