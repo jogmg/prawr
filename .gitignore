@@ -9,3 +9,4 @@ contracts/out
 .env
 .DS_Store
 coverage
+.vscode
